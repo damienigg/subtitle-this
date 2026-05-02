@@ -36,7 +36,11 @@
             {% if f.type == 'select' %}
               <select id="{{ k }}" name="{{ k }}" {% if is_readonly %}disabled{% endif %}>
                 {% for opt in f.options %}
-                  <option value="{{ opt }}" {% if v == opt %}selected{% endif %}>{{ opt }}</option>
+                  {% if opt is mapping %}
+                    <option value="{{ opt.value }}" {% if v == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                  {% else %}
+                    <option value="{{ opt }}" {% if v == opt %}selected{% endif %}>{{ opt }}</option>
+                  {% endif %}
                 {% endfor %}
               </select>
             {% elif f.type == 'checkbox' %}

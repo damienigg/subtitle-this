@@ -23,8 +23,21 @@ templates = Jinja2Templates(directory="app/templates")
 # Field metadata drives the settings form rendering. Order here = display order.
 _FIELD_META: list[dict[str, Any]] = [
     # STT
-    {"key": "whisper_backend", "section": "Speech-to-Text", "label": "Backend", "type": "select",
-     "options": ["cpu", "openvino"], "help": "cpu = faster-whisper. openvino = Intel iGPU via optimum-intel."},
+    {"key": "whisper_backend", "section": "Speech-to-Text",
+     "label": "Backend", "type": "select",
+     "options": [
+         {"value": "cpu",
+          "label": "cpu — faster-whisper (works on any host, slower without GPU)"},
+         {"value": "openvino",
+          "label": "openvino — Intel iGPU via optimum-intel (TrueNAS N305, 5–10× faster)"},
+     ],
+     "help": (
+         "• cpu uses faster-whisper, runs entirely on the CPU. INT8 quantization keeps it "
+         "tractable but a 2-hour film on a small/medium model takes 20–60 minutes.\n"
+         "• openvino exports Whisper to OpenVINO IR and runs the encoder on Intel iGPU. "
+         "Only works in the openvino-flavored image with /dev/dri exposed (TrueNAS Scale "
+         "with an N305 / N100 / iGPU-equipped Intel host)."
+     )},
     {"key": "whisper_model", "section": "Speech-to-Text", "label": "Whisper model", "type": "select",
      "options": ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"]},
     {"key": "whisper_compute_type", "section": "Speech-to-Text", "label": "Compute type (CPU backend)",
@@ -132,15 +145,46 @@ _FIELD_META: list[dict[str, Any]] = [
      "label": "Source language priority", "type": "text",
      "help": "comma-separated; '*' is a wildcard that matches any language"},
     {"key": "default_translation_provider", "section": "Defaults",
-     "label": "Translation provider", "type": "select",
-     "options": ["llm", "deepl", "nllb"],
-     "help": "llm = the configured LLM backend (Anthropic or OpenAI-compat). deepl = DeepL cloud (text-only, EU-strong). nllb = local NLLB-200 via OpenVINO (offline, 200 languages)."},
-    {"key": "default_mode", "section": "Defaults", "label": "Quality tier", "type": "select",
-     "options": ["audio", "scene", "cinematic"],
-     "help": "audio = speech only. scene adds an LLM-vision scene bible for "
-             "pronoun/gender disambiguation. cinematic additionally attaches a "
-             "keyframe per cue. scene needs the Vision model enabled; cinematic "
-             "additionally needs the Translation model to be vision-capable."},
+     "label": "Who translates the cues?", "type": "select",
+     "options": [
+         {"value": "llm",
+          "label": "LLM — use the Translation model configured above (recommended)"},
+         {"value": "deepl",
+          "label": "DeepL — cloud translation API (set DeepL API key below)"},
+         {"value": "nllb",
+          "label": "NLLB-200 — local 200-language model (OpenVINO image only)"},
+     ],
+     "help": (
+         "Each option requires different setup:\n"
+         "• LLM uses whatever you configured in the Translation model section above "
+         "(Claude / GPT / Llama / Qwen / DeepSeek / Gemini / ...). Best quality. Vision-aware "
+         "in scene/cinematic modes.\n"
+         "• DeepL is a dedicated translation API. Free tier: 500k characters/month "
+         "(~6 movies). Excellent for European languages. Text-only — never sees the picture. "
+         "Requires the DeepL API key in the API keys section below.\n"
+         "• NLLB-200 is Meta's 200-language model. Runs locally on the Intel iGPU via "
+         "OpenVINO. Free, offline. Lower quality than the cloud options on common pairs but "
+         "covers the long tail. Only available in the openvino-flavored Docker image."
+     )},
+    {"key": "default_mode", "section": "Defaults",
+     "label": "Quality tier (and what visual context to add)", "type": "select",
+     "options": [
+         {"value": "audio",
+          "label": "audio — speech only · fastest · cheapest"},
+         {"value": "scene",
+          "label": "scene — + LLM-vision scene bible (pronoun & gender disambiguation)"},
+         {"value": "cinematic",
+          "label": "cinematic — scene + per-cue keyframe attached to translation"},
+     ],
+     "help": (
+         "• audio uses Whisper transcription only — no visual context. Always works.\n"
+         "• scene runs ffmpeg scene-detection on the video, sends one keyframe per shot to "
+         "the Vision model for a 1-2 sentence description, then feeds the resulting bible to "
+         "the translator as cached system context. Requires the Vision model section enabled.\n"
+         "• cinematic does what scene does AND additionally attaches one keyframe per cue to "
+         "the translation call so the translator literally sees the moment for each line. "
+         "Requires the Translation model to be vision-capable."
+     )},
     {"key": "default_skip_if_target_audio_exists", "section": "Defaults",
      "label": "Skip when target-language audio is already present", "type": "checkbox"},
 
