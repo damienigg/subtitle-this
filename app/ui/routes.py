@@ -10,10 +10,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app import jobs
-from app.api.manage import emby_client
+from app.api.manage import media_server_client
 from app.config import READ_ONLY_FIELDS, SENSITIVE_FIELDS, _EnvSettings, settings
-from app.emby.client import EmbyError
 from app.processor import SUPPORTED_MODES
+from app.server import MediaServerError
 
 
 router = APIRouter()
@@ -71,8 +71,8 @@ _SECTION_META: dict[str, str] = {
     "Subtitles": (
         "WebVTT line-wrap formatting."
     ),
-    "Emby": (
-        "How Babel Tower reaches your Emby server."
+    "Media server": (
+        "How Babel Tower reaches your media server (Emby / Jellyfin / Plex)."
     ),
     "API keys": (
         "Cloud provider keys. Leave everything blank for fully-local setups."
@@ -337,14 +337,36 @@ _FIELD_META: list[dict[str, Any]] = [
      "label": "Max lines per cue", "type": "number",
      "help": "Overflow merges into the last line — never drops content."},
 
-    # ── Emby integration ──────────────────────────────────────────────────────
-    {"key": "emby_url", "section": "Emby",
-     "label": "Emby server URL", "type": "text",
-     "help": "Where Babel reaches Emby. e.g. http://emby:8096 (docker-compose service name) "
+    # ── Media server (Emby / Jellyfin / Plex) ─────────────────────────────────
+    {"key": "media_server_type", "section": "Media server",
+     "label": "Server type", "type": "select",
+     "options": [
+         {"value": "emby",
+          "label": "emby — Emby Server (the original)"},
+         {"value": "jellyfin",
+          "label": "jellyfin — Jellyfin (open-source fork of Emby; same REST API)"},
+         {"value": "plex",
+          "label": "plex — Plex Media Server (different API + auth, uses X-Plex-Token)"},
+     ],
+     "help": "Which media server you're talking to. Emby and Jellyfin share an "
+             "implementation (their REST APIs are functionally identical — Jellyfin keeps "
+             "Emby's /Items, /System/Info/Public endpoints and the X-Emby-Token auth header). "
+             "Plex has its own client (X-Plex-Token auth, /library/sections + "
+             "/library/metadata/{ratingKey} endpoints)."},
+    {"key": "media_server_url", "section": "Media server",
+     "label": "Server URL", "type": "text",
+     "help": "Where Babel reaches your media server. Examples: "
+             "http://emby:8096 (docker-compose service name), "
+             "http://jellyfin:8096, "
+             "http://plex:32400 (Plex's default port), "
              "or http://192.168.1.10:8096 (LAN IP)."},
-    {"key": "emby_api_key", "section": "Emby",
-     "label": "Emby API key", "type": "password",
-     "help": "Generate in Emby admin → Server Settings → Advanced → API Keys."},
+    {"key": "media_server_api_key", "section": "Media server",
+     "label": "API key (Plex: X-Plex-Token)", "type": "password",
+     "help": "For Emby: generate at Emby admin → Server Settings → Advanced → API Keys. "
+             "For Jellyfin: same path — Dashboard → API Keys. "
+             "For Plex: this is your X-Plex-Token (find it on plex.tv/account → "
+             "Authorized Devices, or sign in once and grab it from any local-server URL "
+             "in your browser)."},
 
     # ── API keys ──────────────────────────────────────────────────────────────
     {"key": "deepl_api_key", "section": "API keys",
@@ -391,7 +413,7 @@ def dashboard(request: Request) -> HTMLResponse:
         "dashboard.html",
         {
             "jobs": jobs.list_jobs(20),
-            "emby_configured": bool(settings.emby_url and settings.emby_api_key),
+            "server_configured": bool(settings.media_server_url and settings.media_server_api_key),
             "settings": settings.all_values(mask_sensitive=True),
             "active": "dashboard",
         },
@@ -414,8 +436,8 @@ def library(
     start_index: int = 0,
     limit: int = 50,
 ) -> HTMLResponse:
-    """Browse Emby items, filter, and queue per-item subtitling jobs."""
-    if not settings.emby_url or not settings.emby_api_key:
+    """Browse media-server items, filter, and queue per-item subtitling jobs."""
+    if not settings.media_server_url or not settings.media_server_api_key:
         return templates.TemplateResponse(
             request, "library.html",
             {
@@ -439,7 +461,7 @@ def library(
     items: list[dict] = []
     total = 0
     try:
-        page = emby_client().list_videos(start_index=start_index, limit=limit, search_term=q or None)
+        page = media_server_client().list_videos(start_index=start_index, limit=limit, search_term=q or None)
         for it in page.items:
             has_sub = it.has_subtitle_track(target_lang)
             if missing_only and has_sub:
@@ -449,7 +471,7 @@ def library(
                 "path": it.path, "has_target_subtitle": has_sub,
             })
         total = page.total
-    except (EmbyError, HTTPException) as e:
+    except (MediaServerError, HTTPException) as e:
         error = str(e)
 
     return templates.TemplateResponse(

@@ -102,9 +102,14 @@ class _EnvSettings(BaseSettings):
     cinematic_frame_max_size: int = 768
     cinematic_batch_size: int = 10
 
-    # Emby
-    emby_url: str | None = None
-    emby_api_key: str | None = None
+    # Media server (Emby / Jellyfin / Plex). Type drives:
+    # - which client class is built (Emby+Jellyfin share one impl, Plex has its own)
+    # - the auth header convention (X-Emby-Token vs X-Plex-Token)
+    # - UI label cosmetics (badge says "Emby"/"Jellyfin"/"Plex")
+    # The api_key field doubles as the Plex token when type=plex.
+    media_server_type: str = "emby"   # emby | jellyfin | plex
+    media_server_url: str | None = None
+    media_server_api_key: str | None = None
 
 
 # Set of fields that are sensitive — masked in UI GET responses, password input on edit.
@@ -112,7 +117,7 @@ SENSITIVE_FIELDS: set[str] = {
     "translation_llm_api_key",
     "vision_llm_api_key",
     "deepl_api_key",
-    "emby_api_key",
+    "media_server_api_key",
 }
 
 # Set of fields the UI cannot edit (operator-only via env).
@@ -230,6 +235,20 @@ class SettingsStore:
         if old_anthropic_key:
             data.setdefault("translation_llm_api_key", old_anthropic_key)
             data.setdefault("vision_llm_api_key", old_anthropic_key)
+
+        # Migration: emby_url / emby_api_key were renamed to media_server_url /
+        # media_server_api_key when we generalized to Emby + Jellyfin + Plex.
+        # Existing deployments had their server pre-configured under the old
+        # names; copy them over and default the new server-type to 'emby'
+        # (since that's what they were using).
+        old_emby_url = data.pop("emby_url", None)
+        old_emby_key = data.pop("emby_api_key", None)
+        if old_emby_url is not None:
+            data.setdefault("media_server_url", old_emby_url)
+        if old_emby_key is not None:
+            data.setdefault("media_server_api_key", old_emby_key)
+        if (old_emby_url or old_emby_key) and "media_server_type" not in data:
+            data["media_server_type"] = "emby"
 
         return data
 

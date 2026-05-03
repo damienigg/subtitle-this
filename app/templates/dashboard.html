@@ -7,13 +7,16 @@
   <div class="grid">
 
     <article class="stat-card">
-      <header>Emby</header>
-      {% if emby_configured %}
-        <div class="pill-row"><span class="status-pill ok">configured</span></div>
-        <p><code class="path">{{ settings.emby_url }}</code></p>
+      <header>Media server</header>
+      {% if server_configured %}
+        <div class="pill-row">
+          <span class="status-pill ok">{{ settings.media_server_type }}</span>
+          <span class="status-pill ok">configured</span>
+        </div>
+        <p><code class="path">{{ settings.media_server_url }}</code></p>
       {% else %}
         <div class="pill-row"><span class="status-pill warn">not configured</span></div>
-        <p><a href="/settings">Set the Emby URL + API key →</a></p>
+        <p><a href="/settings">Set the media server URL + API key →</a></p>
       {% endif %}
     </article>
 
@@ -68,7 +71,7 @@
 <section>
   <h2>Library actions</h2>
   <p>
-    Sweep queues a job for every Emby item missing a subtitle in your default
+    Sweep queues a job for every library item missing a subtitle in your default
     target language (<strong>{{ settings.default_target_lang }}</strong>). Already-subtitled items are skipped. Jobs run one at a time
     so the iGPU doesn't thrash.
   </p>

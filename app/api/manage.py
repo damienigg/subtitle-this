@@ -1,5 +1,6 @@
-"""Emby-driven endpoints. Resolves Emby item IDs to filesystem paths, runs the
-pipeline, writes .vtt next to media, refreshes Emby metadata."""
+"""Media-server-driven endpoints. Resolves item IDs (Emby / Jellyfin / Plex)
+to filesystem paths, runs the pipeline, writes .vtt next to media, refreshes
+the server's metadata so it picks up the new subtitle."""
 from pathlib import Path
 
 from fastapi import APIRouter, Form, HTTPException
@@ -7,18 +8,25 @@ from pydantic import BaseModel
 
 from app import jobs
 from app.config import settings
-from app.emby.client import EmbyClient, EmbyError, EmbyItem
 from app.processor import ProcessRequest, process
+from app.server import (
+    MediaItem,
+    MediaServerClient,
+    MediaServerError,
+    media_server_client as _build_media_server_client,
+)
 
 
 router = APIRouter(prefix="/api")
 
 
-def emby_client() -> EmbyClient:
-    """Build a fresh Emby client from current settings. Raises 412 if unconfigured."""
-    if not settings.emby_url or not settings.emby_api_key:
-        raise HTTPException(412, "Emby URL and API key are not configured (set them in Settings)")
-    return EmbyClient(settings.emby_url, settings.emby_api_key)
+def media_server_client() -> MediaServerClient:
+    """Build a fresh client for the configured media server (Emby / Jellyfin /
+    Plex). Raises 412 if the server isn't configured."""
+    try:
+        return _build_media_server_client()
+    except MediaServerError as e:
+        raise HTTPException(412, str(e)) from e
 
 
 def _vtt_path(media: Path, target_lang: str, mode: str) -> Path:
@@ -63,17 +71,17 @@ class JobView(BaseModel):
 
 def submit_item_job(
     *,
-    emby: EmbyClient,
-    item: EmbyItem,
+    server: MediaServerClient,
+    item: MediaItem,
     target_lang: str | None = None,
     translation_provider: str | None = None,
     source_lang_priority: list[str] | None = None,
     mode: str | None = None,
     skip_if_target_audio_exists: bool | None = None,
 ) -> jobs.Job:
-    """Queue a job for an Emby item. Used by both UI flows (per-item "Subtitle
-    this" button and the dashboard's "Sweep library") — both share the same
-    defaults-from-settings fallback semantics."""
+    """Queue a job for a media-server item. Used by both UI flows (per-item
+    "Subtitle this" button and the dashboard's "Sweep library") — both share
+    the same defaults-from-settings fallback semantics."""
     if not item.path:
         raise ValueError(f"item {item.id!r} has no path field")
 
@@ -123,9 +131,9 @@ def submit_item_job(
 
         # Language tag write-back: if the source track had no language tag and
         # Whisper detected one, persist that detection to the file's audio
-        # stream metadata so Emby (and any other tool) sees the right language
-        # on next probe. Best-effort — we don't fail the job if it doesn't
-        # land, since the .vtt is already written.
+        # stream metadata so the media server (and any other tool) sees the
+        # right language on next probe. Best-effort — we don't fail the job
+        # if it doesn't land, since the .vtt is already written.
         if (
             result.source_track_language is None
             and result.detected_source_language
@@ -144,10 +152,10 @@ def submit_item_job(
                       file=sys.stderr, flush=True)
 
         try:
-            emby.refresh_item(item_id)
-        except EmbyError:
-            # The .vtt is on disk; refresh failure is non-fatal — Emby will
-            # pick it up on the next library scan regardless.
+            server.refresh_item(item_id)
+        except MediaServerError:
+            # The .vtt is on disk; refresh failure is non-fatal — the server
+            # will pick it up on the next library scan regardless.
             pass
 
     return jobs.submit(
@@ -163,14 +171,20 @@ def submit_item_job(
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 
-@router.get("/emby/health")
-def emby_health() -> dict:
-    if not settings.emby_url or not settings.emby_api_key:
-        return {"configured": False, "reachable": False}
-    return {"configured": True, "reachable": emby_client().health()}
+@router.get("/server/health")
+def server_health() -> dict:
+    """Probe the configured media server. Returns configured=False when no
+    URL/key is set in Settings, otherwise reports the reachability."""
+    if not settings.media_server_url or not settings.media_server_api_key:
+        return {"configured": False, "reachable": False, "type": settings.media_server_type}
+    try:
+        reachable = _build_media_server_client().health()
+    except MediaServerError:
+        reachable = False
+    return {"configured": True, "reachable": reachable, "type": settings.media_server_type}
 
 
-@router.get("/emby/items", response_model=list[ItemSummary])
+@router.get("/server/items", response_model=list[ItemSummary])
 def list_items(
     target_lang: str | None = None,
     limit: int = 200,
@@ -179,11 +193,11 @@ def list_items(
 ) -> list[ItemSummary]:
     target = target_lang or settings.default_target_lang
     try:
-        page = emby_client().list_videos(
+        page = media_server_client().list_videos(
             start_index=start_index, limit=limit, search_term=q,
         )
-    except EmbyError as e:
-        raise HTTPException(502, f"Emby request failed: {e}") from e
+    except MediaServerError as e:
+        raise HTTPException(502, f"Media server request failed: {e}") from e
     return [
         ItemSummary(
             id=it.id,
@@ -204,18 +218,19 @@ def process_item(
     mode: str | None = None,
     skip_if_target_audio_exists: bool | None = None,
 ) -> JobView:
-    """Queue a translation job for an Emby item. All optional params override
-    the corresponding default from Settings; omitting them uses the configured
-    defaults. Query-param-based so HTMX's default form-POST works directly."""
+    """Queue a translation job for a media-server item. All optional params
+    override the corresponding default from Settings; omitting them uses the
+    configured defaults. Query-param-based so HTMX's default form-POST works
+    directly."""
     try:
-        emby = emby_client()
-        item = emby.get_item(item_id)
-    except EmbyError as e:
-        raise HTTPException(502, f"Emby item lookup failed: {e}") from e
+        server = media_server_client()
+        item = server.get_item(item_id)
+    except MediaServerError as e:
+        raise HTTPException(502, f"Media server item lookup failed: {e}") from e
 
     try:
         job = submit_item_job(
-            emby=emby,
+            server=server,
             item=item,
             target_lang=target_lang,
             translation_provider=translation_provider,
@@ -234,31 +249,31 @@ def process_batch(
     mode: str | None = Form(None),
     translation_provider: str | None = Form(None),
 ) -> SweepResult:
-    """Queue translation jobs for a user-selected batch of Emby items.
+    """Queue translation jobs for a user-selected batch of media-server items.
 
     Backs the multi-select action on the Library page: user ticks N rows,
     clicks "Subtitle selected", we receive the list of item ids as repeated
     `item_id` form fields. Every selected item is queued unconditionally —
     we don't skip items that already have a subtitle, because the user may
-    be deliberately re-running with new Settings. Items whose Emby lookup
+    be deliberately re-running with new Settings. Items whose server lookup
     fails or which fail mode/provider validation are tallied in `skipped`
     so the UI can surface that count.
     """
     if not item_id:
         raise HTTPException(400, "no item ids provided")
 
-    emby = emby_client()
+    server = media_server_client()
     submitted: list[str] = []
     skipped = 0
     for iid in item_id:
         try:
-            item = emby.get_item(iid)
-        except EmbyError:
+            item = server.get_item(iid)
+        except MediaServerError:
             skipped += 1
             continue
         try:
             job = submit_item_job(
-                emby=emby,
+                server=server,
                 item=item,
                 target_lang=target_lang,
                 mode=mode,
@@ -278,14 +293,15 @@ def sweep(
     page_size: int = 200,
 ) -> SweepResult:
     """Queue a job for every library item missing a target-language subtitle.
-    Pages server-side via Emby's Items API, capped by `max_items` for safety.
-    Accepts query params so HTMX's default form-POST can call it without a body."""
+    Pages server-side via the configured media server, capped by `max_items`
+    for safety. Accepts query params so HTMX's default form-POST can call it
+    without a body."""
     target = target_lang or settings.default_target_lang
     try:
-        emby = emby_client()
-        items = list(emby.iter_videos(page_size=page_size, max_items=max_items))
-    except EmbyError as e:
-        raise HTTPException(502, f"Emby request failed: {e}") from e
+        server = media_server_client()
+        items = list(server.iter_videos(page_size=page_size, max_items=max_items))
+    except MediaServerError as e:
+        raise HTTPException(502, f"Media server request failed: {e}") from e
 
     submitted: list[str] = []
     skipped = 0
@@ -297,7 +313,7 @@ def sweep(
             skipped += 1
             continue
         try:
-            job = submit_item_job(emby=emby, item=item, target_lang=target)
+            job = submit_item_job(server=server, item=item, target_lang=target)
             submitted.append(job.id)
         except ValueError:
             skipped += 1

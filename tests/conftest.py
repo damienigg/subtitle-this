@@ -14,8 +14,9 @@ os.environ["BABEL_CACHE_DIR"] = _SESSION_CACHE
 os.environ.setdefault("BABEL_TRANSLATION_LLM_API_KEY", "sk-test-trans")
 os.environ.setdefault("BABEL_VISION_LLM_API_KEY", "sk-test-vision")
 os.environ.setdefault("BABEL_DEEPL_API_KEY", "test-deepl:fx")
-os.environ.setdefault("BABEL_EMBY_URL", "http://emby.test:9999")
-os.environ.setdefault("BABEL_EMBY_API_KEY", "test-emby")
+os.environ.setdefault("BABEL_MEDIA_SERVER_TYPE", "emby")
+os.environ.setdefault("BABEL_MEDIA_SERVER_URL", "http://media.test:9999")
+os.environ.setdefault("BABEL_MEDIA_SERVER_API_KEY", "test-media-server")
 
 import pytest
 

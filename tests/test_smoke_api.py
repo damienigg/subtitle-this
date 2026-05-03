@@ -87,25 +87,29 @@ def test_jobs_list_initially_empty(client):
     assert r.json() == []
 
 
-def test_emby_health_when_unconfigured_reports_not_configured(client, monkeypatch):
+def test_server_health_when_unconfigured_reports_not_configured(client, monkeypatch):
     from app.config import settings
-    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "emby_url": "", "emby_api_key": ""})
-    r = client.get("/api/emby/health")
+    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "media_server_url": "", "media_server_api_key": ""})
+    r = client.get("/api/server/health")
     assert r.status_code == 200
     body = r.json()
-    assert body == {"configured": False, "reachable": False}
+    assert body["configured"] is False
+    assert body["reachable"] is False
+    # The server type is reported even when unconfigured so the UI can
+    # show "Emby (not configured)" instead of just "(not configured)".
+    assert "type" in body
 
 
-def test_process_endpoint_412_when_emby_unconfigured(client, monkeypatch):
+def test_process_endpoint_412_when_server_unconfigured(client, monkeypatch):
     from app.config import settings
-    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "emby_url": "", "emby_api_key": ""})
+    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "media_server_url": "", "media_server_api_key": ""})
     r = client.post("/api/process/some-item-id")
     assert r.status_code == 412
 
 
-def test_sweep_endpoint_412_when_emby_unconfigured(client, monkeypatch):
+def test_sweep_endpoint_412_when_server_unconfigured(client, monkeypatch):
     from app.config import settings
-    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "emby_url": "", "emby_api_key": ""})
+    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "media_server_url": "", "media_server_api_key": ""})
     r = client.post("/api/sweep")
     assert r.status_code == 412
 
@@ -117,9 +121,9 @@ def test_batch_endpoint_400_when_no_items_selected(client):
     assert r.status_code == 400
 
 
-def test_batch_endpoint_412_when_emby_unconfigured(client, monkeypatch):
+def test_batch_endpoint_412_when_server_unconfigured(client, monkeypatch):
     from app.config import settings
-    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "emby_url": "", "emby_api_key": ""})
+    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "media_server_url": "", "media_server_api_key": ""})
     r = client.post("/api/batch", data={"item_id": ["a", "b"]})
     assert r.status_code == 412
 
@@ -131,9 +135,17 @@ def test_webhook_endpoint_does_not_exist(client):
     assert r.status_code == 404
 
 
+def test_old_emby_namespaced_endpoints_are_gone(client):
+    """When we generalized to support Jellyfin and Plex alongside Emby, the
+    /api/emby/* paths got renamed to /api/server/*. Guard against accidental
+    re-introduction."""
+    assert client.get("/api/emby/health").status_code == 404
+    assert client.get("/api/emby/items").status_code == 404
+
+
 def test_transcribe_translate_endpoint_does_not_exist(client):
-    """The path-based curl endpoint was removed — only the Emby-item-driven
-    /api/process/{id} (UI-backed) remains."""
+    """The path-based curl endpoint was removed — only the media-server-item-
+    driven /api/process/{id} (UI-backed) remains."""
     r = client.post("/transcribe-translate", json={
         "media_path": "/totally/nonexistent/file.mkv",
         "target_lang": "fr",
@@ -158,7 +170,7 @@ def test_settings_page_renders(client):
 
 def test_library_page_renders_warning_when_unconfigured(client, monkeypatch):
     from app.config import settings
-    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "emby_url": "", "emby_api_key": ""})
+    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "media_server_url": "", "media_server_api_key": ""})
     r = client.get("/library")
     assert r.status_code == 200
     assert "not configured" in r.text
