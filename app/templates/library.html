@@ -7,12 +7,12 @@
 
   {% if not configured %}
     <article style="background: #5a4a14; color: #fbe49b; border-color: #5a4a14;">
-      Emby is not configured. Set <strong>Emby server URL</strong> and <strong>Emby API key</strong>
+      Media server is not configured. Set the <strong>Server URL</strong> and <strong>API key</strong>
       on the <a href="/settings">Settings</a> page to browse the library.
     </article>
   {% elif error %}
     <article style="background: #5a1f1f; color: #f5b3b3; border-color: #5a1f1f;">
-      Failed to fetch from Emby: {{ error }}
+      Failed to fetch from media server: {{ error }}
     </article>
   {% else %}
 
@@ -64,12 +64,16 @@
           hx-on::after-request="onBatchResult(event)">
       <input type="hidden" name="target_lang" value="{{ target_lang }}">
       <input type="hidden" name="mode" value="{{ mode }}">
+      {# Hidden item_id inputs are populated by JS from localStorage so the
+         batch persists across pagination. The visible checkboxes below carry
+         data-item-id only (no name attribute) to avoid duplicate submissions. #}
+      <div id="batch-hidden-fields" hidden></div>
 
       <div class="batch-action-bar">
         <strong>Batch:</strong>
-        <span><span id="selected-count">0</span> selected</span>
+        <span><span id="selected-count">0</span> selected<span id="off-page-note"></span></span>
         <button type="button" class="secondary outline" id="select-all-btn">Select all visible</button>
-        <button type="button" class="secondary outline" id="clear-selection-btn">Clear</button>
+        <button type="button" class="secondary outline" id="clear-selection-btn">Clear all</button>
         <button type="submit" id="batch-submit-btn" disabled>Subtitle selected</button>
         <span id="batch-result" class="batch-result"></span>
       </div>
@@ -89,7 +93,7 @@
         <tbody>
           {% for item in items %}
           <tr>
-            <td><input type="checkbox" name="item_id" value="{{ item.id }}" class="item-cb" aria-label="Select {{ item.name }}"></td>
+            <td><input type="checkbox" data-item-id="{{ item.id }}" data-item-name="{{ item.name }}" class="item-cb" aria-label="Select {{ item.name }}"></td>
             <td>{{ item.name }}</td>
             <td>{{ item.type }}</td>
             <td>
@@ -133,36 +137,138 @@
     </div>
 
     <script>
-      // ── Batch selection: checkbox count + select-all + post-submit handler ──
+      // ── Batch selection with cross-page persistence ─────────────────────────
+      // Selected item IDs live in localStorage so the batch survives
+      // pagination, filter changes, and accidental reloads. On every render:
+      //  1) read the saved selection
+      //  2) tick the visible checkboxes whose item id is in the selection
+      //  3) populate hidden <input name="item_id"> fields for the *entire*
+      //     selection (not just the visible page) — the form posts those
+      //     to /api/batch.
+      // Visible checkboxes carry data-item-id but no `name` attribute, so they
+      // never submit on their own — they're just UI affordances that toggle
+      // the saved selection.
       (function () {
+        const STORAGE_KEY = 'subtitleThis.batchSelection';
+
         const itemCbs = document.querySelectorAll('input.item-cb');
         if (!itemCbs.length) return;
+
         const countEl = document.getElementById('selected-count');
+        const offPageNoteEl = document.getElementById('off-page-note');
         const submitBtn = document.getElementById('batch-submit-btn');
         const headerCb = document.getElementById('select-all-cb');
         const resultEl = document.getElementById('batch-result');
+        const hiddenFieldsEl = document.getElementById('batch-hidden-fields');
 
-        function updateCount() {
-          const n = Array.from(itemCbs).filter(c => c.checked).length;
-          countEl.textContent = n;
-          submitBtn.disabled = n === 0;
-          headerCb.checked = n > 0 && n === itemCbs.length;
-          headerCb.indeterminate = n > 0 && n < itemCbs.length;
+        // ── Persisted state: { itemId: itemName } ──────────────────────────────
+        function loadSelection() {
+          try {
+            return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+          } catch (e) {
+            return {};
+          }
+        }
+        function saveSelection(sel) {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(sel));
         }
 
-        itemCbs.forEach(c => c.addEventListener('change', updateCount));
+        let selection = loadSelection();
+
+        // Visible-page lookup so we can quickly tell on/off-page count
+        const visibleIds = new Set(
+          Array.from(itemCbs).map(c => c.dataset.itemId)
+        );
+
+        // ── Render: hidden inputs + on-screen counts ───────────────────────────
+        function renderHiddenInputs() {
+          // Replace every child of #batch-hidden-fields with one <input type="hidden">
+          // per selected item id.
+          hiddenFieldsEl.replaceChildren();
+          for (const id of Object.keys(selection)) {
+            const inp = document.createElement('input');
+            inp.type = 'hidden';
+            inp.name = 'item_id';
+            inp.value = id;
+            hiddenFieldsEl.appendChild(inp);
+          }
+        }
+
+        function updateUI() {
+          const ids = Object.keys(selection);
+          const total = ids.length;
+          const offPage = ids.filter(id => !visibleIds.has(id)).length;
+          const visibleSelected = total - offPage;
+
+          countEl.textContent = total;
+          submitBtn.disabled = total === 0;
+
+          if (offPage > 0) {
+            offPageNoteEl.textContent =
+              ' (' + visibleSelected + ' on this page, ' + offPage + ' from other pages)';
+          } else {
+            offPageNoteEl.textContent = '';
+          }
+
+          // Header checkbox state — reflects only the visible page.
+          const allVisibleChecked = visibleSelected > 0 && visibleSelected === itemCbs.length;
+          headerCb.checked = allVisibleChecked;
+          headerCb.indeterminate = visibleSelected > 0 && !allVisibleChecked;
+        }
+
+        // ── Wire up: pre-check visible boxes from saved selection ──────────────
+        itemCbs.forEach(cb => {
+          if (selection[cb.dataset.itemId]) cb.checked = true;
+          cb.addEventListener('change', () => {
+            const id = cb.dataset.itemId;
+            const name = cb.dataset.itemName;
+            if (cb.checked) {
+              selection[id] = name;
+            } else {
+              delete selection[id];
+            }
+            saveSelection(selection);
+            renderHiddenInputs();
+            updateUI();
+          });
+        });
+
         headerCb.addEventListener('change', () => {
-          itemCbs.forEach(c => c.checked = headerCb.checked);
-          updateCount();
+          // Apply header state only to visible rows; off-page selection untouched.
+          itemCbs.forEach(cb => {
+            cb.checked = headerCb.checked;
+            const id = cb.dataset.itemId;
+            const name = cb.dataset.itemName;
+            if (cb.checked) {
+              selection[id] = name;
+            } else {
+              delete selection[id];
+            }
+          });
+          saveSelection(selection);
+          renderHiddenInputs();
+          updateUI();
         });
+
         document.getElementById('select-all-btn').addEventListener('click', () => {
-          itemCbs.forEach(c => c.checked = true);
-          updateCount();
+          itemCbs.forEach(cb => {
+            cb.checked = true;
+            selection[cb.dataset.itemId] = cb.dataset.itemName;
+          });
+          saveSelection(selection);
+          renderHiddenInputs();
+          updateUI();
         });
+
         document.getElementById('clear-selection-btn').addEventListener('click', () => {
-          itemCbs.forEach(c => c.checked = false);
+          // Clear EVERYTHING — including off-page items. Distinct from a
+          // per-page clear (which we don't expose because users rarely want it).
+          selection = {};
+          saveSelection(selection);
+          itemCbs.forEach(cb => { cb.checked = false; });
+          renderHiddenInputs();
+          updateUI();
           resultEl.innerHTML = '';
-          updateCount();
         });
 
         window.onBatchResult = function (event) {
@@ -172,8 +278,13 @@
               const r = JSON.parse(event.detail.xhr.responseText);
               resultEl.innerHTML = '<span class="status-pill ok">queued ' + r.submitted +
                 ' · skipped ' + r.skipped + '</span>';
-              itemCbs.forEach(c => c.checked = false);
-              updateCount();
+              // Successful submit → drain the saved selection so the user
+              // doesn't accidentally re-queue the same items on next browse.
+              selection = {};
+              saveSelection(selection);
+              itemCbs.forEach(cb => { cb.checked = false; });
+              renderHiddenInputs();
+              updateUI();
             } catch (e) {
               resultEl.innerHTML = '<span class="status-pill ok">queued</span>';
             }
@@ -183,6 +294,10 @@
               event.detail.xhr.status + ' · ' + detail + '</span>';
           }
         };
+
+        // First paint
+        renderHiddenInputs();
+        updateUI();
       })();
     </script>
   {% endif %}
