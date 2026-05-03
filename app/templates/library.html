@@ -142,13 +142,19 @@
 
   {# Sticky batch panel at the bottom — visible only when the batch has items.
      Renders fully from localStorage; supports per-item lang + mode editing,
-     row removal, batch-wide processing, and a clear-all action. #}
+     row removal, batch-wide processing, live per-row progress, batch-wide
+     cancel, and a clear-all action. #}
   <div id="batch-panel" class="batch-panel" hidden>
     <div class="batch-summary">
       <strong>Batch:</strong>
       <span><span id="batch-count">0</span> items</span>
+      <div class="progress-wrap" id="batch-progress-wrap" hidden>
+        <div class="progress-bar" id="batch-progress-bar" style="width: 0%"></div>
+        <span class="progress-label" id="batch-progress-label">0%</span>
+      </div>
       <button type="button" class="secondary outline" id="batch-toggle">▼ Show items</button>
       <button type="button" id="batch-process">Process batch</button>
+      <button type="button" class="secondary outline" id="batch-cancel" hidden>Cancel batch</button>
       <button type="button" class="secondary outline" id="batch-clear">Clear all</button>
       <span id="batch-result" class="batch-result"></span>
     </div>
@@ -206,7 +212,15 @@
       const itemsBody = document.getElementById('batch-items-body');
       const processBtn = document.getElementById('batch-process');
       const clearBtn = document.getElementById('batch-clear');
+      const cancelBatchBtn = document.getElementById('batch-cancel');
       const resultEl = document.getElementById('batch-result');
+      const batchProgressWrap = document.getElementById('batch-progress-wrap');
+      const batchProgressBar = document.getElementById('batch-progress-bar');
+      const batchProgressLabel = document.getElementById('batch-progress-label');
+
+      // States we treat as "still working" — used to know when to keep polling
+      // and whether the cancel button should still be live.
+      const ACTIVE_STATES = new Set(['queued', 'running', 'canceling']);
 
       // ── State (persisted) ────────────────────────────────────────────────
       function loadBatch() {
@@ -232,6 +246,12 @@
         saveBatch(batch);
       }
 
+      // ── Per-job state cache (job_id → JobView) refreshed by the poller ───
+      // Not persisted: lives only for the lifetime of the page. Used to
+      // render per-row progress bars and to compute the batch-wide aggregate
+      // without doing one fetch per row every tick.
+      let jobsById = {};
+
       // ── Render ────────────────────────────────────────────────────────────
       function buildOption(value, label, selectedValue) {
         const opt = document.createElement('option');
@@ -248,6 +268,8 @@
           itemsTable.hidden = true;
           toggleBtn.textContent = '▼ Show items';
           resultEl.innerHTML = '';
+          batchProgressWrap.hidden = true;
+          cancelBatchBtn.hidden = true;
           return;
         }
         panel.hidden = false;
@@ -302,17 +324,123 @@
           removeBtn.type = 'button';
           removeBtn.className = 'secondary outline';
           removeBtn.textContent = '×';
-          removeBtn.title = 'Remove from batch';
-          removeBtn.addEventListener('click', () => {
+          removeBtn.title = 'Remove from batch (cancels job if still running)';
+          removeBtn.addEventListener('click', async () => {
+            // If this entry has a running/queued job, cancel it before
+            // dropping from the panel — otherwise the job keeps running
+            // invisibly and the user has no way to stop it.
+            const job = entry.job_id ? jobsById[entry.job_id] : null;
+            if (job && ACTIVE_STATES.has(job.status)) {
+              try {
+                await fetch('/api/jobs/' + encodeURIComponent(entry.job_id) + '/cancel', { method: 'POST' });
+              } catch (e) { /* best effort — drop from batch either way */ }
+            }
             batch.splice(idx, 1);
             saveBatch(batch);
             renderBatch();
+            paintLiveState();
           });
           tdRemove.appendChild(removeBtn);
           tr.appendChild(tdRemove);
 
           itemsBody.appendChild(tr);
         });
+        // Paint per-row status from the most recent poll snapshot.
+        paintLiveState();
+      }
+
+      // ── Live-state painter ───────────────────────────────────────────────
+      // Reads jobsById (populated by pollJobs) and updates each row's status
+      // cell + the aggregate batch progress bar. Called after every poll and
+      // after any state-changing action.
+      function paintLiveState() {
+        let anyActive = false;
+        let progSum = 0;
+        let progCount = 0;
+        for (const entry of batch) {
+          const cell = document.getElementById('batch-row-status-' + entry.id);
+          if (!cell) continue;
+          const job = entry.job_id ? jobsById[entry.job_id] : null;
+          if (!job) {
+            // Pre-process or job evicted from the in-memory cap.
+            cell.innerHTML = entry.job_id
+              ? '<span class="status-pill muted">…</span>'
+              : '';
+            continue;
+          }
+          if (ACTIVE_STATES.has(job.status)) anyActive = true;
+          if (job.status === 'running' || job.status === 'canceling') {
+            const pct = Math.round(job.progress_pct || 0);
+            cell.innerHTML =
+              '<div class="progress-wrap" style="width:7rem" title="' +
+                (job.progress_stage || '') + '">' +
+                '<div class="progress-bar" style="width:' + pct + '%"></div>' +
+                '<span class="progress-label">' + pct + '%</span>' +
+              '</div>';
+            progSum += (job.progress_pct || 0);
+            progCount++;
+          } else if (job.status === 'succeeded') {
+            cell.innerHTML = '<span class="status-pill ok">done</span>';
+            progSum += 100;
+            progCount++;
+          } else if (job.status === 'queued') {
+            cell.innerHTML = '<span class="status-pill queued">queued</span>';
+            progSum += 0;
+            progCount++;
+          } else if (job.status === 'failed') {
+            cell.innerHTML = '<span class="status-pill err">' +
+              ((job.error || 'failed').slice(0, 40)) + '</span>';
+            progCount++;
+          } else if (job.status === 'canceled') {
+            cell.innerHTML = '<span class="status-pill canceled">canceled</span>';
+            progCount++;
+          } else {
+            cell.innerHTML = '<span class="status-pill muted">' + job.status + '</span>';
+          }
+        }
+        // Show the aggregate bar when any entry has been queued — even if
+        // already done — so the user sees the batch finish at 100% rather
+        // than the bar disappearing the instant the last job lands.
+        const knownEntries = batch.filter(e => e.job_id).length;
+        if (knownEntries > 0) {
+          batchProgressWrap.hidden = false;
+          const pct = progCount > 0 ? Math.round(progSum / progCount) : 0;
+          batchProgressBar.style.width = pct + '%';
+          batchProgressLabel.textContent = pct + '%';
+        } else {
+          batchProgressWrap.hidden = true;
+        }
+        // Cancel batch is live whenever at least one job is still working.
+        cancelBatchBtn.hidden = !anyActive;
+      }
+
+      // ── Poller ───────────────────────────────────────────────────────────
+      // Refreshes jobsById from /api/jobs every 2.5s while any batch entry
+      // has an active (queued/running/canceling) job. Stops on its own when
+      // nothing in the batch is active anymore — no leaked timers.
+      let pollHandle = null;
+      async function pollJobs() {
+        try {
+          const r = await fetch('/api/jobs?limit=200');
+          if (!r.ok) return;
+          const list = await r.json();
+          jobsById = {};
+          for (const j of list) jobsById[j.id] = j;
+        } catch (e) { /* network blip — try again next tick */ }
+        paintLiveState();
+        // Keep polling while any batch entry's job is still working.
+        const stillActive = batch.some(e => {
+          const j = e.job_id ? jobsById[e.job_id] : null;
+          return j && ACTIVE_STATES.has(j.status);
+        });
+        if (!stillActive) {
+          if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+        }
+      }
+      function startPolling() {
+        if (pollHandle) return;
+        pollJobs();   // immediate first paint
+        pollHandle = setInterval(pollJobs, 2500);
       }
 
       // ── "+ Batch" buttons on each row ─────────────────────────────────────
@@ -375,7 +503,7 @@
 
         processBtn.disabled = true;
         clearBtn.disabled = true;
-        resultEl.innerHTML = '<span class="status-pill running">processing…</span>';
+        resultEl.innerHTML = '<span class="status-pill running">submitting…</span>';
         // Make the per-item table visible so the user sees status flow in.
         itemsTable.hidden = false;
         toggleBtn.textContent = '▲ Hide items';
@@ -387,18 +515,26 @@
 
         for (const entry of snapshot) {
           const statusEl = document.getElementById('batch-row-status-' + entry.id);
-          if (statusEl) statusEl.innerHTML = '<span class="status-pill running">…</span>';
+          if (statusEl) statusEl.innerHTML = '<span class="status-pill queued">submitting…</span>';
           const url = '/api/process/' + encodeURIComponent(entry.id) +
             '?target_lang=' + encodeURIComponent(entry.target_lang) +
             '&mode=' + encodeURIComponent(entry.mode);
           try {
             const resp = await fetch(url, { method: 'POST' });
             if (resp.ok) {
+              const view = await resp.json();
+              // Persist the job id on the batch entry so cancel + polling
+              // can find it later, and so removing the row knows whether
+              // there's a live job to cancel.
+              const idx = batch.findIndex(e => e.id === entry.id);
+              if (idx >= 0) {
+                batch[idx].job_id = view.id;
+                saveBatch(batch);
+              }
+              jobsById[view.id] = view;
               queued++;
-              if (statusEl) statusEl.innerHTML = '<span class="status-pill queued">queued</span>';
             } else {
               failed++;
-              const detail = (await resp.text()).slice(0, 80);
               if (statusEl) statusEl.innerHTML =
                 '<span class="status-pill err">HTTP ' + resp.status + '</span>';
             }
@@ -410,26 +546,43 @@
         }
 
         resultEl.innerHTML = '<span class="status-pill ok">queued ' + queued +
-          (failed > 0 ? ' · failed ' + failed : '') + '</span>';
-        // Drain processed items from the batch (keep failures so user can retry).
-        if (failed === 0) {
-          batch = [];
-          saveBatch(batch);
-          // Wait a moment so the user sees the success status, then collapse.
-          setTimeout(() => { renderBatch(); }, 1500);
-        } else {
-          // Keep the batch as-is so the user can retry; but successes are
-          // also retained which means re-clicking Process will re-queue them.
-          // The cache will turn re-runs into instant cache hits, so this is
-          // generally fine — the alternative (tracking which succeeded) is
-          // more state for marginal benefit.
-        }
+          (failed > 0 ? ' · failed-to-submit ' + failed : '') + '</span>';
+        // Don't drain the batch on success anymore — we keep entries so the
+        // user can watch progress + cancel. They'll click Clear all when done
+        // (or remove individual rows). The cache turns any re-run into an
+        // instant hit, so leaving the items doesn't cost anything.
         processBtn.disabled = false;
         clearBtn.disabled = false;
+        startPolling();
+        paintLiveState();
+      });
+
+      // ── Cancel batch: fire cancel for every entry's still-active job ─────
+      cancelBatchBtn.addEventListener('click', async () => {
+        const targets = batch.filter(e => {
+          const j = e.job_id ? jobsById[e.job_id] : null;
+          return j && ACTIVE_STATES.has(j.status);
+        });
+        if (targets.length === 0) return;
+        if (!confirm('Cancel ' + targets.length + ' running/queued job' +
+            (targets.length === 1 ? '' : 's') + '?')) return;
+        cancelBatchBtn.disabled = true;
+        await Promise.all(targets.map(e =>
+          fetch('/api/jobs/' + encodeURIComponent(e.job_id) + '/cancel', { method: 'POST' })
+            .catch(() => {})
+        ));
+        cancelBatchBtn.disabled = false;
+        // The next poll tick will pick up the new statuses and repaint.
+        pollJobs();
       });
 
       // First paint
       renderBatch();
+      // If we have any persisted job ids (user refreshed mid-batch), kick
+      // off polling immediately so the UI reflects current state.
+      if (batch.some(e => e.job_id)) {
+        startPolling();
+      }
     })();
   </script>
 

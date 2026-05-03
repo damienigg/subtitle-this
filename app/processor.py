@@ -1,8 +1,11 @@
-"""Core pipeline orchestrator. The media-server-driven job runner (queued
-via the UI's per-item "Subtitle this" button or the multi-select batch
-action on the Library page) calls into here. Subtitle creation is
-exclusively a manual per-item or per-batch user action — there is no
-auto-trigger, no path-based CLI flow, and no whole-library sweep.
+"""Core pipeline orchestrator.
+
+Subtitle creation is exclusively a manual per-item or per-batch user
+action — there is no auto-trigger, no path-based CLI flow, and no
+whole-library sweep. The job runner (queued via the UI's per-item
+"Subtitle this" button or the batch flow on the Library page) calls
+into here, optionally passing progress + cancel callbacks so the UI can
+show a live progress bar and respect cancel clicks.
 
 Modes:
 - `audio` — Whisper → text translator. No vision.
@@ -21,6 +24,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from app import cache as cache_mod
 from app.config import settings
@@ -28,6 +32,34 @@ from app.pipeline import audio, frames, scene_bible, scenes, stt, tracks
 from app.pipeline.translate import TranslationError, get_provider
 from app.pipeline.translate.base import SceneInfo, TranslationContext
 from app.pipeline.vtt import to_webvtt
+
+
+# Progress callback contract: receives (pct ∈ [0, 100], stage_label). Total
+# pipeline budget allocation:
+#   0–3   extracting audio
+#   3–8   detecting language (only when track is untagged + openvino backend)
+#   8–80  transcribing       (the long pole)
+#   80–98 translating
+#   98–100 writing
+# Cache hits jump to 100 immediately. The processor passes a sub-callback to
+# transcribe() / translate() that maps their internal 0–1 progress onto the
+# stage's slot in this overall budget.
+ProgressCB = Callable[[float, str], None]
+CancelCB = Callable[[], None]
+
+
+def _noop_progress(pct: float, stage: str) -> None: ...
+def _noop_cancel() -> None: ...
+
+
+def _scaled(progress: ProgressCB, *, base: float, span: float, stage: str) -> Callable[[float], None]:
+    """Adapter: takes a sub-task's 0–1 fractional progress and reports it as
+    `base + frac * span` to the outer progress callback under `stage`. So if
+    transcribe says it's 50% done, the outer pipeline reports 8 + 0.5 * 72 =
+    44% under stage='transcribing'."""
+    def cb(frac: float) -> None:
+        progress(base + max(0.0, min(1.0, frac)) * span, stage)
+    return cb
 
 
 SUPPORTED_MODES = ("audio", "scene", "cinematic")
@@ -113,10 +145,16 @@ def validate_mode_provider_combo(mode: str, translation_provider: str) -> None:
             )
 
 
-def process(req: ProcessRequest) -> ProcessResult:
+def process(
+    req: ProcessRequest,
+    *,
+    progress: ProgressCB = _noop_progress,
+    check_cancel: CancelCB = _noop_cancel,
+) -> ProcessResult:
     started = time.monotonic()
 
     validate_mode_provider_combo(req.mode, req.translation_provider)
+    check_cancel()
     if req.mode in MULTIMODAL_MODES:
         # Validate the configured vision LLM has its credentials. This is
         # process()-only (not in the shared validator) because it requires
@@ -170,6 +208,7 @@ def process(req: ProcessRequest) -> ProcessResult:
     # under the current quick key so the next run hits the fast path.
     cached, quick_key, content_key = cache_mod.lookup_two_level(media, **key_kwargs)
     if cached:
+        progress(100, "cache hit")
         return ProcessResult(
             vtt=cached["vtt"],
             source_track_index=cached["source_track"]["index"],
@@ -182,6 +221,8 @@ def process(req: ProcessRequest) -> ProcessResult:
             took_seconds=time.monotonic() - started,
         )
 
+    progress(0, "extracting audio")
+    check_cancel()
     audio_tracks = tracks.probe(req.media_path)
     if not audio_tracks:
         raise NoSpeech("no audio tracks found in media")
@@ -211,16 +252,27 @@ def process(req: ProcessRequest) -> ProcessResult:
     )
 
     with audio.extract_audio(req.media_path, track.index) as wav_path:
+        progress(3, "detecting language" if needs_detection_pre_pass else "transcribing")
+        check_cancel()
         language_hint = track.language
         if needs_detection_pre_pass:
             from app.pipeline import lang_detect
             detected = lang_detect.detect(wav_path)
             if detected:
                 language_hint = detected
-        transcription = stt.transcribe(wav_path, language_hint=language_hint)
+            progress(8, "transcribing")
+            check_cancel()
+        transcription = stt.transcribe(
+            wav_path,
+            language_hint=language_hint,
+            progress=_scaled(progress, base=8, span=72, stage="transcribing"),
+            check_cancel=check_cancel,
+        )
 
     if not transcription.cues:
         raise NoSpeech(f"no speech detected in track {track.index}")
+    progress(80, "translating")
+    check_cancel()
 
     # For scene/cinematic, use the CONTENT fingerprint (not the quick one)
     # to key the on-disk scene bible. The bible depends on the visual
@@ -242,9 +294,12 @@ def process(req: ProcessRequest) -> ProcessResult:
             transcription.detected_language,
             req.target_lang,
             context=context,
+            progress=_scaled(progress, base=80, span=18, stage="translating"),
+            check_cancel=check_cancel,
         )
     except TranslationError as e:
         raise TranslationFailed(str(e)) from e
+    progress(98, "writing")
 
     vtt = to_webvtt(
         translated,

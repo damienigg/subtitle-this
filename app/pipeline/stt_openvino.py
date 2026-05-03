@@ -7,12 +7,17 @@ subsequent calls hit the cached IR and run on the configured device.
 import logging
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 import soundfile as sf
 
 from app.config import settings
 from app.pipeline.openvino_introspect import log_selected_device
 from app.pipeline.stt import Cue, TranscriptionResult
+
+
+def _noop_progress(frac: float) -> None: ...
+def _noop_cancel() -> None: ...
 
 
 _log = logging.getLogger("subtitle_this")
@@ -49,17 +54,33 @@ def _pipeline(model_name: str, device: str, cache_root: str):
     )
 
 
-def transcribe(audio_path: Path, language_hint: str | None = None) -> TranscriptionResult:
+def transcribe(
+    audio_path: Path,
+    language_hint: str | None = None,
+    *,
+    progress: Callable[[float], None] = _noop_progress,
+    check_cancel: Callable[[], None] = _noop_cancel,
+) -> TranscriptionResult:
     audio, sr = sf.read(str(audio_path))
     if sr != 16000:
         raise RuntimeError(f"expected 16 kHz audio, got {sr} Hz")
 
+    check_cancel()
     pipe = _pipeline(settings.whisper_model, settings.openvino_device, str(settings.cache_dir))
+    check_cancel()
     generate_kwargs: dict = {"task": "transcribe"}
     if language_hint:
         generate_kwargs["language"] = language_hint
 
+    # The HF pipeline takes the entire audio array and chunks internally —
+    # no per-chunk callback is exposed. Pretend the call linearly fills 0→1
+    # by reporting a small bump up-front, the rest at the end. UI gets a
+    # responsive bar at start + completion, with a long flat in between
+    # (the real transcribe time).
+    progress(0.05)
     result = pipe(audio, return_timestamps=True, generate_kwargs=generate_kwargs)
+    check_cancel()
+    progress(1.0)
 
     cues: list[Cue] = []
     for i, chunk in enumerate(result.get("chunks", [])):

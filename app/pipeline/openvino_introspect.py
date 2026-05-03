@@ -24,6 +24,21 @@ import logging
 
 _log = logging.getLogger("subtitle_this")
 
+# Last-seen device pick per model label. Populated by log_selected_device on
+# every successful introspection so the UI can read the actual pick (e.g.
+# "GPU" or "CPU") via a status endpoint, instead of the user having to grep
+# docker logs. Process-local; resets on container restart.
+_last_selected: dict[str, dict] = {}
+
+
+def selected_devices_snapshot() -> dict[str, dict]:
+    """Return a copy of the device-selection registry, for the UI status
+    endpoint. Each entry is keyed by a model label (e.g. 'whisper:small')
+    and has shape:
+        {"requested": "AUTO", "selected": ["GPU"]}
+    Empty dict when no model has loaded yet (cold start)."""
+    return {k: dict(v) for k, v in _last_selected.items()}
+
 
 def log_selected_device(label: str, *, requested: str, model) -> None:
     """Log the OpenVINO device(s) actually executing this model.
@@ -45,11 +60,13 @@ def log_selected_device(label: str, *, requested: str, model) -> None:
             "(could not introspect — optimum-intel layout may have changed)",
             label, requested,
         )
+        _last_selected[label] = {"requested": requested, "selected": []}
         return
     _log.info(
         "[openvino] %s  requested=%s  selected=%s",
         label, requested, ",".join(selected) or "?",
     )
+    _last_selected[label] = {"requested": requested, "selected": selected}
 
 
 def _selected_devices(model) -> list[str] | None:

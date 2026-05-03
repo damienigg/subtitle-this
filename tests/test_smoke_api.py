@@ -105,6 +105,26 @@ def test_process_endpoint_412_when_server_unconfigured(client, monkeypatch):
     assert r.status_code == 412
 
 
+def test_openvino_status_endpoint_returns_shape(client):
+    """The Dashboard hydrates an "AUTO → GPU/CPU" pill from /api/openvino/status.
+    The endpoint must always return the {configured_device, models} shape so
+    the JS doesn't have to handle "endpoint missing" specially."""
+    r = client.get("/api/openvino/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert "configured_device" in body
+    assert "models" in body
+    assert isinstance(body["models"], dict)
+
+
+def test_cancel_unknown_job_returns_404(client):
+    """The Cancel button on the jobs table POSTs to /api/jobs/{id}/cancel.
+    Calling it with a stale id (job evicted from the in-memory cap) should
+    404 cleanly, not 500."""
+    r = client.post("/api/jobs/this-job-does-not-exist/cancel")
+    assert r.status_code == 404
+
+
 def test_libraries_endpoint_412_when_unconfigured(client, monkeypatch):
     """The library-list endpoint exists but bubbles up 412 when the server
     URL/key aren't configured — same pattern as /api/server/items and

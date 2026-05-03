@@ -1,9 +1,15 @@
+from typing import Callable
+
 import httpx
 
 from app.config import settings
 from app.pipeline.stt import Cue
 from app.pipeline.translate._util import batches
 from app.pipeline.translate.base import TranslationError
+
+
+def _noop_progress(frac: float) -> None: ...
+def _noop_cancel() -> None: ...
 
 
 # DeepL request constants
@@ -40,15 +46,28 @@ class DeepLProvider:
             timeout=_DEEPL_TIMEOUT,
         )
 
-    def translate(self, cues: list[Cue], source_lang: str, target_lang: str, context=None) -> list[Cue]:
+    def translate(
+        self,
+        cues: list[Cue],
+        source_lang: str,
+        target_lang: str,
+        context=None,
+        *,
+        progress: Callable[[float], None] = _noop_progress,
+        check_cancel: Callable[[], None] = _noop_cancel,
+    ) -> list[Cue]:
         # DeepL is text-only — `context` (scene bible / per-cue frames) is silently
         # ignored. The processor enforces that scene/cinematic modes use the LLM provider.
         if target_lang not in _TARGET_LANG:
             raise TranslationError(f"DeepL does not support target language {target_lang!r}")
 
         out: list[Cue] = []
+        total = max(1, len(cues))
         for batch in batches(cues, _DEEPL_BATCH):
+            check_cancel()
             out.extend(self._translate_batch(batch, source_lang, target_lang))
+            progress(len(out) / total)
+        progress(1.0)
         return out
 
     def _translate_batch(self, batch: list[Cue], source_lang: str, target_lang: str) -> list[Cue]:

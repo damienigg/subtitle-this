@@ -15,11 +15,16 @@ Either backend exposes the same `model.generate(...)` API, so the inference
 loop below doesn't need to know which one it got.
 """
 from functools import lru_cache
+from typing import Callable
 
 from app.config import settings
 from app.pipeline.openvino_introspect import log_selected_device
 from app.pipeline.stt import Cue
 from app.pipeline.translate.base import TranslationError
+
+
+def _noop_progress(frac: float) -> None: ...
+def _noop_cancel() -> None: ...
 
 
 # ISO 639-1 -> FLORES-200 code (the 30 most common languages NLLB-200 supports).
@@ -107,7 +112,16 @@ class NLLBProvider:
         # construction rather than mid-translation.
         _load()
 
-    def translate(self, cues: list[Cue], source_lang: str, target_lang: str, context=None) -> list[Cue]:
+    def translate(
+        self,
+        cues: list[Cue],
+        source_lang: str,
+        target_lang: str,
+        context=None,
+        *,
+        progress: Callable[[float], None] = _noop_progress,
+        check_cancel: Callable[[], None] = _noop_cancel,
+    ) -> list[Cue]:
         # NLLB is text-only — `context` is silently ignored. The processor enforces
         # that scene/cinematic modes use the LLM provider.
         try:
@@ -119,7 +133,9 @@ class NLLBProvider:
             tgt_token_id = tokenizer.convert_tokens_to_ids(tgt)
 
             out: list[Cue] = []
+            total = max(1, len(cues))
             for i in range(0, len(cues), _BATCH):
+                check_cancel()
                 batch = cues[i:i + _BATCH]
                 inputs = tokenizer(
                     [c.text for c in batch],
@@ -137,6 +153,8 @@ class NLLBProvider:
                 decoded = tokenizer.batch_decode(generated, skip_special_tokens=True)
                 for c, t in zip(batch, decoded):
                     out.append(Cue(id=c.id, start=c.start, end=c.end, text=t))
+                progress(len(out) / total)
+            progress(1.0)
             return out
         except TranslationError:
             raise

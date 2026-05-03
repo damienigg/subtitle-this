@@ -1,11 +1,15 @@
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Callable, Protocol
 
 from app.pipeline.stt import Cue
 
 
 class TranslationError(Exception):
     pass
+
+
+def _noop_progress(frac: float) -> None: ...
+def _noop_cancel() -> None: ...
 
 
 @dataclass
@@ -43,10 +47,15 @@ class TranslationProvider(Protocol):
         source_lang: str,
         target_lang: str,
         context: TranslationContext | None = None,
+        *,
+        progress: Callable[[float], None] = _noop_progress,
+        check_cancel: Callable[[], None] = _noop_cancel,
     ) -> list[Cue]:
         """Translate cues, optionally using extra `context` for higher-tier modes.
         Timing (start/end) and ids must be preserved. Length must match input.
         Providers without multimodal capability ignore `context` and translate
-        text only.
+        text only. `progress` is called with fractional completion in [0,1] as
+        batches finish; `check_cancel` is called between batches and raises
+        JobCanceled if the user has clicked cancel.
         """
         ...

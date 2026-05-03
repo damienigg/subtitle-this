@@ -48,6 +48,55 @@ def test_max_jobs_eviction(monkeypatch):
     assert set(jobs._jobs.keys()) == {"j2", "j3", "j4"}
 
 
+def test_update_progress_clamps_and_is_monotonic_within_stage():
+    """The progress bar should never visually jump backwards while still in
+    the same stage. update_progress enforces this so a mid-batch retry that
+    reports a smaller fraction (e.g. one cue lands earlier than expected
+    after a beam-search rerun) doesn't cause UI rubber-banding."""
+    j = jobs.Job(id="x", item_id="i", item_name="n", target_lang="fr", provider="llm", mode="audio")
+    j.update_progress(40, "transcribing")
+    j.update_progress(35, "transcribing")
+    assert j.progress_pct == 40
+
+    # Out-of-range values are clamped.
+    j.update_progress(150, "transcribing")
+    assert j.progress_pct == 100
+    j.update_progress(-50, "transcribing")
+    assert j.progress_pct == 100  # still clamped, monotonic-within-stage holds.
+
+    # Stage change always wins regardless of pct, so the user sees the new
+    # phase even if its starting fraction is below the prior fraction.
+    j.update_progress(50, "translating")
+    assert j.progress_stage == "translating"
+
+
+def test_request_cancel_sets_canceling_status_when_running():
+    j = jobs.Job(id="x", item_id="i", item_name="n", target_lang="fr", provider="llm", mode="audio")
+    j.status = "running"
+    j.request_cancel()
+    assert j.cancel_requested is True
+    assert j.status == "canceling"
+
+
+def test_request_cancel_does_not_overwrite_terminal_status():
+    """A user clicking cancel just as a job finishes shouldn't flip a
+    succeeded/failed job back to 'canceling' — the work is done."""
+    j = jobs.Job(id="x", item_id="i", item_name="n", target_lang="fr", provider="llm", mode="audio")
+    j.status = "succeeded"
+    j.request_cancel()
+    assert j.cancel_requested is True   # flag still set (idempotent / harmless)
+    assert j.status == "succeeded"      # but status is unchanged
+
+
+def test_check_cancel_raises_only_when_requested():
+    j = jobs.Job(id="x", item_id="i", item_name="n", target_lang="fr", provider="llm", mode="audio")
+    j.check_cancel()  # no-op when cancel not requested
+    j.cancel_requested = True
+    import pytest
+    with pytest.raises(jobs.JobCanceled):
+        j.check_cancel()
+
+
 def test_submit_without_main_loop_raises():
     import pytest
     # _main_loop is None at module load; submitting should raise a clear error.

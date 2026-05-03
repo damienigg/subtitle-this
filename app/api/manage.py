@@ -72,6 +72,9 @@ class JobView(BaseModel):
     queued_at: float
     started_at: float | None
     finished_at: float | None
+    progress_pct: float = 0.0
+    progress_stage: str = ""
+    cancel_requested: bool = False
 
 
 # ── Shared submission helper ───────────────────────────────────────────────────
@@ -132,6 +135,8 @@ def submit_item_job(
                 mode=job_mode,
                 skip_if_target_audio_exists=skip_if_target,
             ),
+            progress=job.update_progress,
+            check_cancel=job.check_cancel,
         )
         out = _vtt_path(media, target_lang, result.mode)
         out.write_text(result.vtt, encoding="utf-8")
@@ -176,6 +181,18 @@ def submit_item_job(
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
+
+
+@router.get("/openvino/status")
+def openvino_status() -> dict:
+    """What device(s) the OpenVINO AUTO plugin actually picked for each
+    loaded model. Empty `models` dict means no inference has run yet since
+    boot — until then, AUTO's pick is unknown by definition."""
+    from app.pipeline.openvino_introspect import selected_devices_snapshot
+    return {
+        "configured_device": settings.openvino_device,
+        "models": selected_devices_snapshot(),
+    }
 
 
 @router.get("/server/health")
@@ -272,4 +289,18 @@ def get_job(job_id: str) -> JobView:
     j = jobs.get_job(job_id)
     if not j:
         raise HTTPException(404, f"job {job_id!r} not found")
+    return JobView(**j.to_dict())
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=JobView)
+def cancel_job(job_id: str) -> JobView:
+    """Mark a job for cancellation. The pipeline checks the flag at stage
+    boundaries (and between transcription segments / translation batches),
+    so cancel takes effect within seconds for short stages and at the end
+    of the current chunk for the long ones. Already-finished jobs return
+    unchanged (no error)."""
+    j = jobs.get_job(job_id)
+    if not j:
+        raise HTTPException(404, f"job {job_id!r} not found")
+    j.request_cancel()
     return JobView(**j.to_dict())

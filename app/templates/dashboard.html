@@ -33,6 +33,13 @@
       <div class="pill-row">
         <span class="status-pill ok">{{ settings.whisper_backend }}</span>
         <span class="status-pill muted">{{ settings.whisper_model }}</span>
+        {% if settings.whisper_backend == 'openvino' %}
+          {# Hydrated from /api/openvino/status — empty until the first job
+             actually loads a model. Shows e.g. "AUTO → GPU" or
+             "AUTO → CPU (fallback)" so the user can see at a glance whether
+             their iGPU is doing the work. #}
+          <span class="status-pill muted" id="openvino-device-pill" hidden></span>
+        {% endif %}
       </div>
       <p>
         {% if settings.whisper_backend == 'cpu' %}
@@ -107,6 +114,45 @@
 </section>
 
 {% include "_jobs_table.html" %}
+
+{# Hydrate the OpenVINO device pill on the STT card. Polls every 10s so a
+   GPU pick that lands at job start gets surfaced shortly after. #}
+<script>
+  (function() {
+    const pill = document.getElementById('openvino-device-pill');
+    if (!pill) return;
+    async function refresh() {
+      try {
+        const r = await fetch('/api/openvino/status');
+        if (!r.ok) return;
+        const data = await r.json();
+        const requested = data.configured_device || 'AUTO';
+        const models = data.models || {};
+        const entries = Object.values(models);
+        if (entries.length === 0) {
+          pill.textContent = requested + ' → not loaded yet';
+          pill.hidden = false;
+          return;
+        }
+        // If every model picked the same device, show a single combined
+        // pill. Otherwise list them.
+        const picks = entries.map(e => (e.selected || []).join(',') || '?');
+        const unique = [...new Set(picks)];
+        if (unique.length === 1) {
+          const dev = unique[0];
+          pill.textContent = requested + ' → ' + dev;
+          pill.className = 'status-pill ' + (dev === 'GPU' ? 'ok' : 'warn');
+        } else {
+          pill.textContent = requested + ' → mixed (' + picks.join(', ') + ')';
+          pill.className = 'status-pill warn';
+        }
+        pill.hidden = false;
+      } catch (e) { /* leave hidden */ }
+    }
+    refresh();
+    setInterval(refresh, 10000);
+  })();
+</script>
 
 <section>
   <h2>How to subtitle a film</h2>

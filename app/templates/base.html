@@ -71,7 +71,41 @@
     .status-pill.err, .status-pill.failed { background: var(--bt-err-bg); color: var(--bt-err-fg); }
     .status-pill.queued { background: var(--bt-info-bg); color: var(--bt-info-fg); }
     .status-pill.running { background: var(--bt-active-bg); color: var(--bt-active-fg); }
+    .status-pill.canceling { background: var(--bt-warn-bg); color: var(--bt-warn-fg); }
+    .status-pill.canceled { background: var(--bt-muted-bg); color: var(--bt-muted-fg); }
     .status-pill.muted { background: var(--bt-muted-bg); color: var(--bt-muted-fg); }
+
+    /* Progress bar — used in the jobs table and the batch panel summary. The
+       label sits on top of the filled bar (centered in the wrap). Bar width
+       is the filled portion; the unfilled portion is the wrap's background. */
+    .progress-wrap {
+      position: relative; width: 11rem; height: 1.2rem;
+      background: var(--bt-muted-bg);
+      border-radius: 0.3rem; overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      background: var(--bt-active-bg);
+      transition: width 0.4s ease;
+    }
+    .progress-label {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.78em; font-weight: 500; color: var(--bt-active-fg);
+      white-space: nowrap; padding: 0 0.4rem;
+      text-shadow: 0 0 2px rgba(0, 0, 0, 0.3);
+    }
+    .progress-label.muted {
+      position: static;
+      color: var(--pico-muted-color);
+      text-shadow: none;
+    }
+    .col-progress { width: 12rem; }
+    .cancel-job-btn {
+      padding: 0.15rem 0.5rem !important;
+      font-size: 0.85em !important;
+      margin: 0 !important;
+    }
 
     /* Dashboard stat cards — compact, consistent height, balanced gutters.
        The status grid uses an explicit auto-fit so 4 cards fit on a wide

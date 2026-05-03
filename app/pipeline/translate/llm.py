@@ -3,6 +3,7 @@
 prompt and JSON schema are the same regardless of backend; only the wire
 format differs."""
 import json
+from typing import Callable
 
 from app.config import settings
 from app.pipeline.llm import (
@@ -11,6 +12,10 @@ from app.pipeline.llm import (
 from app.pipeline.stt import Cue
 from app.pipeline.translate._util import batches
 from app.pipeline.translate.base import TranslationContext, TranslationError
+
+
+def _noop_progress(frac: float) -> None: ...
+def _noop_cancel() -> None: ...
 
 
 _SYSTEM_PROMPT = """You are a professional subtitle translator producing high-quality dialogue subtitles for an audiovisual production.
@@ -78,6 +83,9 @@ class LLMTranslationProvider:
         source_lang: str,
         target_lang: str,
         context: TranslationContext | None = None,
+        *,
+        progress: Callable[[float], None] = _noop_progress,
+        check_cancel: Callable[[], None] = _noop_cancel,
     ) -> list[Cue]:
         cinematic = bool(context and context.cue_frames)
         if cinematic and not self._client.supports_vision():
@@ -91,8 +99,12 @@ class LLMTranslationProvider:
         batch_size = settings.cinematic_batch_size if cinematic else settings.translation_batch_size
 
         out: list[Cue] = []
+        total = max(1, len(cues))
         for batch in batches(cues, batch_size):
+            check_cancel()
             out.extend(self._translate_batch(batch, source_lang, target_lang, context))
+            progress(len(out) / total)
+        progress(1.0)
         return out
 
     def _translate_batch(

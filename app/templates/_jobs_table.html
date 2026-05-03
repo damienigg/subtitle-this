@@ -6,19 +6,21 @@
          hx-swap="outerHTML">
   <h2>Recent jobs</h2>
   {% if not jobs %}
-    <p><em>No jobs yet. Open the <a href="/library">Library</a>, click <strong>Subtitle this</strong> on a row, or tick rows and hit <strong>Subtitle selected</strong> for a batch.</em></p>
+    <p><em>No jobs yet. Open the <a href="/library">Library</a> and click <strong>▶ Subtitle now</strong> on a row, or stage a batch via <strong>+ Batch</strong>.</em></p>
   {% else %}
     <table>
       <thead>
         <tr>
           <th>Status</th>
           <th>Item</th>
+          <th>Progress</th>
           <th>Lang</th>
           <th>Mode</th>
           <th>Provider</th>
           <th>Cues</th>
           <th>Output</th>
           <th>Error</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
@@ -26,15 +28,52 @@
         <tr>
           <td><span class="status-pill {{ j.status }}">{{ j.status }}</span></td>
           <td>{{ j.item_name or j.item_id }}</td>
+          <td class="col-progress">
+            {% if j.status in ('running', 'canceling') %}
+              <div class="progress-wrap" title="{{ j.progress_stage }}">
+                <div class="progress-bar" style="width: {{ j.progress_pct|round(1) }}%"></div>
+                <span class="progress-label">{{ j.progress_pct|round(0) }}% · {{ j.progress_stage }}</span>
+              </div>
+            {% elif j.status == 'succeeded' %}
+              <span class="progress-label muted">100%</span>
+            {% elif j.status == 'queued' %}
+              <span class="progress-label muted">queued</span>
+            {% else %}
+              <span class="progress-label muted">—</span>
+            {% endif %}
+          </td>
           <td>{{ j.target_lang }}</td>
           <td>{{ j.mode }}</td>
           <td>{{ j.provider }}</td>
           <td>{{ j.cue_count or '-' }}</td>
           <td><code class="path">{{ j.output_path or '-' }}</code></td>
           <td>{{ j.error or '' }}</td>
+          <td>
+            {% if j.status in ('queued', 'running') %}
+              <button type="button" class="secondary outline cancel-job-btn"
+                      data-job-id="{{ j.id }}"
+                      title="Cancel this job">✕</button>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+    <script>
+      // Cancel buttons are re-rendered by the HTMX 3-second swap, so wire
+      // them up on each render. POSTs /api/jobs/{id}/cancel and lets the
+      // next swap pick up the new "canceling" / "canceled" status.
+      document.querySelectorAll('.cancel-job-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.jobId;
+          if (!confirm('Cancel this job? Already-running stages will finish their current chunk before stopping.')) return;
+          btn.disabled = true;
+          btn.textContent = '…';
+          try {
+            await fetch('/api/jobs/' + encodeURIComponent(id) + '/cancel', { method: 'POST' });
+          } catch (e) { /* HTMX will re-render with the latest state */ }
+        });
+      });
+    </script>
   {% endif %}
 </section>
