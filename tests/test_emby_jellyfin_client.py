@@ -121,33 +121,83 @@ def test_get_item_404_raises_media_server_error():
         c.get_item("nonexistent")
 
 
-def test_get_item_translates_payload_to_media_item():
-    """Emby's /Items/{id} response with Path + MediaStreams becomes a
-    neutral MediaItem with audio/subtitle streams correctly typed."""
+def test_get_item_uses_collection_query_not_path_style():
+    """Critical: get_item MUST use /Items?Ids=... not /Items/{id} because
+    the path-style endpoint isn't routed reliably across Emby versions
+    (some return a static-file-style 404 on it). This test pins the
+    request shape so a refactor doesn't accidentally regress it."""
+    seen = {}
+
     def handler(req):
-        assert req.url.path == "/Items/12345"
-        assert "Path" in req.url.params.get("Fields", "")
-        assert "MediaStreams" in req.url.params.get("Fields", "")
+        seen["path"] = req.url.path
+        seen["params"] = dict(req.url.params)
         return httpx.Response(200, json={
-            "Id": "12345",
-            "Name": "Casablanca",
-            "Type": "Movie",
-            "Path": "/data/movies/Casablanca/Casablanca.mkv",
-            "MediaStreams": [
-                {"Type": "Video", "Codec": "h264"},
-                {"Type": "Audio", "Codec": "ac3", "Language": "eng", "IsDefault": True},
-                {"Type": "Subtitle", "Codec": "subrip", "Language": "fra"},
-            ],
+            "Items": [{
+                "Id": "12345", "Name": "Casablanca", "Type": "Movie",
+                "Path": "/data/Casablanca.mkv",
+                "MediaStreams": [{"Type": "Subtitle", "Language": "fra"}],
+            }],
         })
     c = _client_with_mock(handler)
     item = c.get_item("12345")
+    assert seen["path"] == "/Items"
+    assert seen["params"]["Ids"] == "12345"
+    assert "Path" in seen["params"]["Fields"]
     assert item.id == "12345"
-    assert item.name == "Casablanca"
-    assert item.path == "/data/movies/Casablanca/Casablanca.mkv"
-    assert item.type == "Movie"
-    assert len(item.streams) == 3
+    assert item.path == "/data/Casablanca.mkv"
+
+
+def test_get_item_empty_items_array_raises_not_found():
+    """Distinct from a 200 with an empty list and a 404. /Items?Ids=X with
+    a missing id returns 200 + Items=[] — must surface as MediaServerError
+    so the API endpoint can map it to a clear UI error."""
+    def handler(req):
+        return httpx.Response(200, json={"Items": [], "TotalRecordCount": 0})
+    c = _client_with_mock(handler)
+    with pytest.raises(MediaServerError, match="not found in library"):
+        c.get_item("nonexistent-id")
+
+
+def test_get_item_falls_back_to_media_sources_for_path_and_streams():
+    """When fetched via /Items?Ids=, some Emby versions populate Path and
+    MediaStreams ONLY inside MediaSources[0] (the nested detailed source
+    descriptor) rather than at the top level. Parser must handle both."""
+    def handler(req):
+        return httpx.Response(200, json={
+            "Items": [{
+                "Id": "1", "Name": "Movie", "Type": "Movie",
+                # No top-level Path or MediaStreams — only in MediaSources
+                "MediaSources": [{
+                    "Path": "/Movies/buried-in-mediasources.mkv",
+                    "MediaStreams": [
+                        {"Type": "Audio", "Language": "eng"},
+                        {"Type": "Subtitle", "Language": "fra"},
+                    ],
+                }],
+            }],
+        })
+    c = _client_with_mock(handler)
+    item = c.get_item("1")
+    assert item.path == "/Movies/buried-in-mediasources.mkv"
+    assert len(item.streams) == 2
     assert item.has_subtitle_track("fr") is True
-    assert item.has_subtitle_track("de") is False
+
+
+def test_get_item_top_level_path_takes_precedence_over_media_sources():
+    """When BOTH top-level and MediaSources[0] have a Path, prefer the
+    top-level one — it's the authoritative answer from Fields=Path."""
+    def handler(req):
+        return httpx.Response(200, json={
+            "Items": [{
+                "Id": "1", "Name": "Movie", "Type": "Movie",
+                "Path": "/canonical-top-level.mkv",
+                "MediaStreams": [{"Type": "Subtitle", "Language": "fra"}],
+                "MediaSources": [{"Path": "/different-fallback-path.mkv"}],
+            }],
+        })
+    c = _client_with_mock(handler)
+    item = c.get_item("1")
+    assert item.path == "/canonical-top-level.mkv"
 
 
 def test_list_videos_passes_pagination_and_search():

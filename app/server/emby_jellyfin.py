@@ -37,15 +37,24 @@ class EmbyJellyfinClient(MediaServerClient):
             return False
 
     def get_item(self, item_id: str) -> MediaItem:
+        # Emby's /Items/{id} path-style endpoint isn't reliably routed across
+        # versions and reverse-proxy setups — some return a static-file-style
+        # 404 ("The file '/Items/X' could not be found"). The Ids= filter on
+        # the collection endpoint is the universally-supported way to fetch
+        # one item by id; works on both Emby and Jellyfin. Returns an Items
+        # array of length 1 on success, length 0 when the id doesn't exist.
         r = self._http.get(
-            f"{self._base}/Items/{item_id}",
-            params={"Fields": "Path,MediaStreams"},
+            f"{self._base}/Items",
+            params={"Ids": item_id, "Fields": "Path,MediaStreams"},
         )
         if r.status_code != 200:
             raise MediaServerError(
-                f"GET /Items/{item_id} → HTTP {r.status_code}: {r.text[:200]}"
+                f"GET /Items?Ids={item_id} → HTTP {r.status_code}: {r.text[:200]}"
             )
-        return _item_from_payload(r.json())
+        items = (r.json().get("Items") or [])
+        if not items:
+            raise MediaServerError(f"item {item_id!r} not found in library")
+        return _item_from_payload(items[0])
 
     def list_videos(
         self,
@@ -87,12 +96,27 @@ class EmbyJellyfinClient(MediaServerClient):
 
 
 def _item_from_payload(d: dict) -> MediaItem:
+    # Path and MediaStreams come back at the top level when explicitly
+    # requested via Fields= (the typical /Items?Recursive=true list call).
+    # When fetching one item via /Items?Ids=X, some Emby versions populate
+    # them only in the nested MediaSources[0] structure. Fall back to that
+    # so both shapes resolve to the same MediaItem.
+    path = d.get("Path") or ""
+    streams_raw = d.get("MediaStreams")
+    if not path or streams_raw is None:
+        sources = d.get("MediaSources") or []
+        if sources:
+            src = sources[0] or {}
+            if not path:
+                path = src.get("Path") or ""
+            if streams_raw is None:
+                streams_raw = src.get("MediaStreams")
     return MediaItem(
         id=str(d.get("Id") or ""),
         name=d.get("Name") or "",
-        path=d.get("Path") or "",
+        path=path,
         type=d.get("Type") or "",
-        streams=[_stream_from_payload(s) for s in (d.get("MediaStreams") or [])],
+        streams=[_stream_from_payload(s) for s in (streams_raw or [])],
     )
 
 
