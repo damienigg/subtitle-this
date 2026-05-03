@@ -222,7 +222,7 @@ def process(req: ProcessRequest) -> ProcessResult:
     vtt = to_webvtt(
         translated,
         header_note=(
-            f"Babel Tower auto-subs ({transcription.detected_language} -> {req.target_lang}, "
+            f"Subtitle This auto-subs ({transcription.detected_language} -> {req.target_lang}, "
             f"mode={req.mode}, whisper={settings.whisper_model}, provider={req.translation_provider})"
         ),
     )

@@ -1,18 +1,20 @@
-# Babel Tower Emby
+# Subtitle This
 
-Auto-generates target-language subtitles for media in your Emby library — YouTube auto-caption style — using Whisper for speech-to-text and an LLM of your choice for translation. Single-service: a single Python/FastAPI app (Docker) that talks to Emby's REST API directly. No Emby plugin to install.
+Auto-generates target-language subtitles for media in your **Emby, Jellyfin, or Plex** library — YouTube auto-caption style — using Whisper for speech-to-text and an LLM of your choice for translation. Single-service: a single Python/FastAPI app (Docker) that talks to your media server's REST API directly. No server plugin to install.
 
-**LLM-agnostic by design.** You pick the translation engine and (optionally) the vision engine, configure them entirely from the web UI, and Babel Tower abstracts the rest. Cloud (Anthropic / OpenAI / Gemini / OpenRouter / DeepSeek / Zhipu / …) or fully local (Ollama / LM Studio / LocalAI / vLLM / llama.cpp) — same UI, same UX.
+**LLM-agnostic and server-agnostic by design.** You pick your media server (Emby / Jellyfin / Plex), pick the translation engine, pick the vision engine if you want scene-aware translation — all from the web UI, no config files, no restart. Cloud LLMs (Anthropic / OpenAI / Gemini / OpenRouter / DeepSeek / Zhipu / …) or fully local (Ollama / LM Studio / LocalAI / vLLM / llama.cpp) — same UI, same UX.
 
 ## Architecture
 
 ```
                            ┌──────────────────────────────────────────┐
-                           │ babel-tower-emby (FastAPI, Docker)       │
+                           │ subtitle-this (FastAPI, Docker)          │
    user (web UI) ─────────▶│  Web UI (Jinja2 — settings, library,     │
                            │            jobs, sweep)                  │
-   Emby Server ◀───────────│  Emby REST client (httpx)                │
-   (path resolve,          │  Pipeline: ffprobe + ffmpeg              │
+                           │  Server-agnostic media client            │
+   Media server ◀──────────│  ├─ EmbyJellyfinClient (X-Emby-Token)    │
+   (Emby / Jellyfin /      │  └─ PlexClient        (X-Plex-Token)     │
+    Plex; path resolve,    │  Pipeline: ffprobe + ffmpeg              │
     metadata refresh)      │     → Whisper (CPU or OpenVINO iGPU)     │
                            │     → LLM / DeepL / NLLB                 │
                            │     → WebVTT writer                      │
@@ -20,20 +22,30 @@ Auto-generates target-language subtitles for media in your Emby library — YouT
                            └──────────────────────────────────────────┘
 ```
 
-**Subtitle creation is exclusively a manual user action through the web UI.** Babel Tower deliberately does NOT expose a webhook receiver, an auto-trigger on Emby's `ItemAdded` events, or a path-based curl endpoint. The two ways to create subtitles, both in the UI:
+**Subtitle creation is exclusively a manual user action through the web UI.** Subtitle This deliberately does NOT expose a webhook receiver, an auto-trigger on `ItemAdded` events, or a path-based curl endpoint. The two ways to create subtitles, both in the UI:
 
 - **Per item** — open `/library`, find an item, click *Subtitle this*.
 - **Whole library** — on the dashboard, click *Sweep library* to queue jobs for every item missing a subtitle in your default target language.
 
 ## What you do as a user
 
-The whole point of Babel Tower is that you never edit a config file. You bring up the container, open `http://<host>:8765/`, and configure everything from three pages:
+The whole point of Subtitle This is that you never edit a config file. You bring up the container, open `http://<host>:8765/`, and configure everything from three pages:
 
-1. **Settings page** — pick your translation engine (LLM or DeepL or NLLB), pick your vision engine (only if you want scene/cinematic modes), paste API keys, point at endpoints. All persisted to disk and applied at runtime — no restart needed.
-2. **Library page** — browse Emby items, filter to "missing target-language sub", click *Subtitle this* on a single item, or hit *Sweep* to queue every missing one in the background.
-3. **Dashboard** — watch jobs progress in real time, sees Emby/STT/LLM status pills.
+1. **Settings page** — pick your **media server** (Emby / Jellyfin / Plex) and paste its URL + API key (Plex token), pick your translation engine (LLM or DeepL or NLLB), pick your vision engine (only if you want scene/cinematic modes), paste LLM API keys, point at endpoints. All persisted to disk and applied at runtime — no restart needed.
+2. **Library page** — browse your server's items, filter to "missing target-language sub", click *Subtitle this* on a single item, multi-select rows for a batch, or hit *Sweep* to queue every missing one in the background.
+3. **Dashboard** — watch jobs progress in real time, sees Server / STT / LLM status pills.
 
 That's it. Env vars exist as an optional first-boot fallback for declarative deployments (TrueNAS YAML, etc.) — see the [Power-user knobs](#power-user-knobs) section at the bottom — but the canonical configuration surface is the web UI.
+
+## Supported media servers
+
+| Server | Implementation | Auth | Notes |
+| --- | --- | --- | --- |
+| **Emby** | `EmbyJellyfinClient` (shared) | `X-Emby-Token` header | The original. Generate the API key in Emby admin → Server Settings → Advanced → API Keys. |
+| **Jellyfin** | `EmbyJellyfinClient` (shared) | `X-Emby-Token` header (legacy compat) | Open-source fork of Emby; their REST API is functionally identical for our purposes. Generate the API key in Dashboard → API Keys. |
+| **Plex** | `PlexClient` | `X-Plex-Token` header | Different API + endpoint structure; the client handles the difference internally. Find your token on plex.tv/account → Authorized Devices, or grab it from any local-server URL in your browser after signing in. |
+
+Pick your server type in Settings → Media server → Server type, paste URL + key, save. The library browser, sweep, and per-item buttons all work the same regardless of which server backs them.
 
 ## Quality tiers (modes)
 
@@ -63,7 +75,7 @@ Three providers, picked from Settings → Defaults → *Who translates the cues?
 
 ### LLM models — split by function
 
-The `llm` provider and the scene-bible builder talk to LLMs. Babel Tower exposes them as **two function-named slots** in the settings UI — *Translation model* and *Vision model* — each independently configurable, so you can mix-and-match (e.g. cheap fast text model for translation + strong vision model for scene descriptions).
+The `llm` provider and the scene-bible builder talk to LLMs. Subtitle This exposes them as **two function-named slots** in the settings UI — *Translation model* and *Vision model* — each independently configurable, so you can mix-and-match (e.g. cheap fast text model for translation + strong vision model for scene descriptions).
 
 #### Translation model
 
@@ -185,8 +197,8 @@ The `cpu` backend uses `faster-whisper` with INT8 quantization. Slower but no sp
 
 ```sh
 # 1. Clone and bring up the container
-git clone <this-repo> babel-tower-emby
-cd babel-tower-emby
+git clone <this-repo> subtitle-this
+cd subtitle-this
 mkdir -p ./cache && sudo chown -R 568:568 ./cache    # see "TrueNAS dataset perms" below
 docker compose up --build -d
 
@@ -194,9 +206,11 @@ docker compose up --build -d
 open http://localhost:8765/
 
 # 3. Go to Settings → fill in:
-#    - Emby section: server URL + API key (Emby admin → Advanced → API Keys)
-#    - Translation model: pick wire protocol, endpoint (if openai_compat), model id, API key
-#    - Vision model (optional, only if you want scene/cinematic): same fields
+#    - Media server section: pick Emby / Jellyfin / Plex, paste URL + API key
+#      (or X-Plex-Token for Plex)
+#    - Translation model (only if you switch the provider to LLM): wire protocol,
+#      endpoint (when openai_compat), model id, API key
+#    - Vision model (only if you want scene/cinematic): same fields
 #    - Defaults: target language, quality tier
 #    Click "Save settings". No restart needed.
 
@@ -206,8 +220,8 @@ open http://localhost:8765/
 
 The web UI shows:
 - **Dashboard** (`/`) — status, recent jobs (auto-refreshing), Sweep button.
-- **Library** (`/library`) — browse Emby items, search by name, filter to "missing target-lang sub", queue a per-item job with the current target language + mode.
-- **Settings** (`/settings`) — every editable parameter (STT backend, Whisper model, translation provider, default target language, scene-detection knobs, Emby URL, API keys, etc.) without redeploying.
+- **Library** (`/library`) — browse your media-server items (Emby / Jellyfin / Plex), search by name, filter to "missing target-lang sub", queue a per-item job, multi-select for batch, or hit Sweep on the dashboard.
+- **Settings** (`/settings`) — every editable parameter (media server type + creds, STT backend, Whisper model, translation provider, default target language, scene-detection knobs, LLM keys, etc.) without redeploying.
 
 Settings persist to `/cache/settings.json` and override env defaults from compose.
 
@@ -224,13 +238,19 @@ Two flows, both in the UI. There is no auto-trigger on item-added events, no web
 ### Whole library (sweep)
 
 1. On the dashboard, click *Sweep library*.
-2. Babel Tower queues one job per item missing a subtitle in your default target language. Already-subtitled items are skipped. Jobs run one at a time so the iGPU doesn't thrash.
+2. Subtitle This queues one job per item missing a subtitle in your default target language. Already-subtitled items are skipped. Jobs run one at a time so the iGPU doesn't thrash.
 
 After a job finishes, the result is cached (keyed by file fingerprint + target lang + provider + mode + STT model + translation/vision LLM model ids). Click *Subtitle this* again on the same item and it returns instantly. Switching the configured LLM in Settings invalidates the cache automatically.
 
-## Generating an Emby API key
+## Generating a media-server API key / token
 
-In Emby admin: **Server Settings → Advanced → API Keys → New API Key**. Paste it into the **Settings** page in the Babel Tower UI. Babel Tower uses it to fetch item metadata and trigger refreshes after writing a new `.vtt`.
+The credential format depends on which server you picked:
+
+- **Emby** — Server admin → Server Settings → Advanced → API Keys → New API Key. Copy the generated key into Settings → Media server → API key.
+- **Jellyfin** — Dashboard → Advanced → API Keys → "+" to create one. Same field in Subtitle This Settings.
+- **Plex** — your X-Plex-Token. Easiest path: sign in at app.plex.tv, open any local-server URL (e.g. browse to your library), then look in DevTools → Network for any request to `:32400` and copy the `X-Plex-Token=…` query parameter or header value. Alternative: visit `https://plex.tv/api/resources?X-Plex-Token=…` after `plex.tv/devices.xml`. Paste it into Settings → Media server → API key (the field doubles as the Plex token slot).
+
+Subtitle This uses the credential to fetch item metadata, list/search the library, and trigger metadata refreshes after writing a new `.vtt`.
 
 ## Deploying on TrueNAS Scale (24.10+ / Electric Eel and later)
 
@@ -243,8 +263,8 @@ SSH into TrueNAS, clone this repo to a dataset, and run docker-compose from the 
 ```sh
 ssh admin@truenas
 cd /mnt/tank/apps        # or wherever you keep apps
-git clone <this-repo> babel-tower-emby
-cd babel-tower-emby
+git clone <this-repo> subtitle-this
+cd subtitle-this
 mkdir -p ./cache && sudo chown -R 568:568 ./cache
 export RENDER_GID=$(getent group render | cut -d: -f3)
 # edit docker-compose.yml: change `/mnt/media:/mnt/media:ro` to your dataset path
@@ -260,9 +280,9 @@ The TrueNAS Apps UI doesn't reliably run `build:` — paste-into-Custom-App work
 **One-time setup (in your fork):**
 
 1. Push the repo to GitHub.
-2. The `Publish container images` workflow runs automatically and creates two images at `ghcr.io/<your-username>/babel-tower-emby`.
+2. The `Publish container images` workflow runs automatically and creates two images at `ghcr.io/<your-username>/subtitle-this`.
 3. Make the package public so TrueNAS can pull without auth:
-   - Go to your GitHub profile → **Packages** tab → click `babel-tower-emby`
+   - Go to your GitHub profile → **Packages** tab → click `subtitle-this`
    - **Package settings** → **Change visibility** → **Public**
    - (Optional, recommended) **Manage Actions access** → Add the repo with **Write** role so future builds can update it.
 
@@ -285,7 +305,7 @@ For production deployments, pin to a specific version tag rather than `:openvino
 
 ### TrueNAS dataset write permissions
 
-Babel Tower runs as the **`app` user (UID/GID 568)** inside the container — not root. UID 568 was chosen deliberately to match the `apps` user that TrueNAS Scale 24.10+ uses for containerized apps. **On TrueNAS, this means dataset reads/writes Just Work without any ACL fiddling** — the `apps`-owned datasets are already writable by UID 568.
+Subtitle This runs as the **`app` user (UID/GID 568)** inside the container — not root. UID 568 was chosen deliberately to match the `apps` user that TrueNAS Scale 24.10+ uses for containerized apps. **On TrueNAS, this means dataset reads/writes Just Work without any ACL fiddling** — the `apps`-owned datasets are already writable by UID 568.
 
 Two host-side directories need to be writable by UID 568:
 
@@ -360,15 +380,16 @@ Everything below is **optional**. The web UI covers the same surface and is the 
 | `BABEL_CINEMATIC_FRAME_MAX_SIZE` | `768`              | Long-edge px for per-cue frames in cinematic mode                       |
 | `BABEL_CINEMATIC_BATCH_SIZE`   | `10`                 | Cues per LLM call in cinematic mode                                     |
 | `BABEL_DEFAULT_SKIP_IF_TARGET_AUDIO_EXISTS` | `true` | Skip when target-language audio is already in the file                   |
-| `BABEL_EMBY_URL`               | (unset)              | Emby server base URL (e.g. `http://emby:8096`)                           |
-| `BABEL_EMBY_API_KEY`           | (unset)              | Emby admin API key (Server Settings → Advanced → API Keys)              |
+| `BABEL_MEDIA_SERVER_TYPE`      | `emby`               | Which media server to talk to: `emby` / `jellyfin` / `plex`             |
+| `BABEL_MEDIA_SERVER_URL`       | (unset)              | Server base URL (Emby/Jellyfin: `http://host:8096`; Plex: `http://host:32400`) |
+| `BABEL_MEDIA_SERVER_API_KEY`   | (unset)              | Emby/Jellyfin API key, or X-Plex-Token for Plex                         |
 | `BABEL_DEEPL_API_KEY`          | (unset)              | DeepL API key. Free-tier keys end in `:fx` (auto-detected)              |
 
 ## Defaults and tradeoffs
 
 - **STT model is `small` by default** for quick iteration. For production quality on the iGPU, switch to `large-v3-turbo` (close to `large-v3` quality at ~2× the speed).
 - **OpenVINO first-run is slow.** The IR conversion for `large-v3-turbo` takes 15–30 min on the N305 and produces ~3 GB of IR files. Subsequent runs hit the cache and start in seconds. Watch the container logs the first time.
-- **Untagged audio tracks are auto-detected.** When ffprobe reports a track without a language tag (Emby just shows "Audio"), Babel Tower runs a Whisper-tiny detection pre-pass on the first 30s of the extracted audio (~2-3s extra per job, model is ~75 MB cached on first use). The detected ISO 639-1 code drives transcription so NLLB/DeepL get the right source language.
+- **Untagged audio tracks are auto-detected.** When ffprobe reports a track without a language tag (Emby just shows "Audio"), Subtitle This runs a Whisper-tiny detection pre-pass on the first 30s of the extracted audio (~2-3s extra per job, model is ~75 MB cached on first use). The detected ISO 639-1 code drives transcription so NLLB/DeepL get the right source language.
 - **Tag write-back is MKV-only and surgical.** When the detected language differs from "untagged", we persist it back into the source file's audio-stream metadata via `mkvpropedit` — which edits ONLY the EBML metadata header and never touches the audio/video data. No re-encode, no remux, no temporal manipulation, no risk of audio gaps. Restricted to `.mkv` / `.mka` / `.webm`. For non-Matroska containers (MP4 / MOV / AVI / …) the write-back is skipped on purpose: an `ffmpeg -c copy` remux would rewrite the whole file with documented edge cases (timestamp re-derivation on unusual MP4s, lost obscure metadata, full-I/O write window) that aren't worth the risk on a media library. Detection still drives transcription correctness for those files — only the persist-to-Emby polish is skipped. Disable entirely via Settings → Defaults → *Tag detected source language back into the source file*.
 - **Path-based contract:** the app reads media files directly from disk. Mount the same path inside the container that Emby sees. No file uploads over HTTP.
 - **Manual-trigger only:** subtitle creation is always an explicit user action in the UI. There is no webhook, no auto-trigger on Emby `ItemAdded`, no path-based curl endpoint. This is a deliberate scope decision — the goal is for the user to decide when each title gets translated.
@@ -381,7 +402,7 @@ pip install -e .[dev]
 pytest
 ```
 
-Tests across pure-logic surface (language normalization, VTT formatting, track selection, scene mapping, settings store with migration, batching, Emby item parsing, cache key invalidation when LLM model changes) plus FastAPI smoke tests for every route. Heavy externals (ffmpeg, Whisper, LLM APIs) are stubbed — the suite runs in ~1s.
+Tests across pure-logic surface (language normalization, VTT formatting, track selection, scene mapping, settings store with migration, batching, Emby/Jellyfin item parsing, Plex payload translation, cache key invalidation when LLM model changes) plus FastAPI smoke tests for every route. Heavy externals (ffmpeg, Whisper, LLM/server APIs) are stubbed — the suite runs in ~1s.
 
 ```
 tests/
@@ -393,19 +414,21 @@ tests/
 ├── test_scenes.py             Cue → scene mapping, keyframe positioning
 ├── test_tracks.py             Track-selection policy
 ├── test_translate_util.py     batches() helper
-├── test_emby_client.py        EmbyItem.has_subtitle_track, ISO 639-2 lookup
+├── test_emby_jellyfin_client.py   MediaItem.has_subtitle_track, payload→neutral conversion
+├── test_plex_client.py        Plex payload translation, section discovery, mocked HTTP
 ├── test_jobs.py               Job dataclass, eviction, missing-loop guard
 ├── test_processor.py          Mode validation gates
+├── test_track_metadata.py     Language tag write-back (MKV-only via mkvpropedit)
 └── test_smoke_api.py          /health, /api/settings, /api/jobs, /api/process,
-                               /api/sweep, dashboards, library, partials, plus
-                               regression tests confirming /webhook/emby and
+                               /api/sweep, /api/batch, dashboards, library, partials,
+                               plus regression tests confirming /webhook/emby and
                                /transcribe-translate are absent (404)
 ```
 
 ## Layout
 
 ```
-babel-tower-emby/
+subtitle-this/
 ├── .github/workflows/publish.yml   GHCR multi-flavor image publish
 ├── .env.example                    Optional first-boot defaults (UI overrides everything)
 ├── docker-compose.yml
@@ -420,10 +443,12 @@ babel-tower-emby/
     ├── jobs.py                     In-memory job queue (single-worker async)
     ├── processor.py                Pipeline orchestrator (called from API + UI)
     ├── api/
-    │   ├── manage.py               Emby-driven endpoints (back the UI buttons)
+    │   ├── manage.py               Media-server-driven endpoints (back the UI buttons)
     │   └── settings_api.py         GET/PATCH /api/settings
-    ├── emby/
-    │   └── client.py               Minimal Emby REST client
+    ├── server/
+    │   ├── base.py                 MediaServerClient ABC + neutral MediaItem/MediaPage/MediaStream
+    │   ├── emby_jellyfin.py        Shared client for Emby and Jellyfin (X-Emby-Token)
+    │   └── plex.py                 Plex client (X-Plex-Token, /library/sections + /library/metadata)
     ├── ui/
     │   └── routes.py               HTML routes (dashboard, library, settings)
     ├── templates/

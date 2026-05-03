@@ -1,7 +1,7 @@
 [project]
-name = "babel-tower-emby"
-version = "0.2.0"
-description = "Speech-to-text + LLM translation service for Emby"
+name = "subtitle-this"
+version = "0.3.0"
+description = "Speech-to-text + LLM translation service for Emby, Jellyfin, and Plex"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",

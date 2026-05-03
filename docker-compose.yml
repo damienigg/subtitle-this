@@ -1,6 +1,6 @@
 services:
-  babel-tower:
-    container_name: babel-tower
+  subtitle-this:
+    container_name: subtitle-this
     restart: unless-stopped
 
     # ── Image source ────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ services:
     # (B) Pull from GHCR — paste-ready for TrueNAS Apps Custom App. Comment out
     #     the `build:` block above and uncomment the line below. Set GHCR_OWNER
     #     in your shell or .env to your GitHub username/org.
-    # image: ghcr.io/${GHCR_OWNER}/babel-tower-emby:${IMAGE_FLAVOR:-openvino}
+    # image: ghcr.io/${GHCR_OWNER}/subtitle-this:${IMAGE_FLAVOR:-openvino}
     # ────────────────────────────────────────────────────────────────────────────
 
     ports:

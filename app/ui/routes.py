@@ -72,7 +72,7 @@ _SECTION_META: dict[str, str] = {
         "WebVTT line-wrap formatting."
     ),
     "Media server": (
-        "How Babel Tower reaches your media server (Emby / Jellyfin / Plex)."
+        "How Subtitle This reaches your media server (Emby / Jellyfin / Plex)."
     ),
     "API keys": (
         "Cloud provider keys. Leave everything blank for fully-local setups."

@@ -157,7 +157,7 @@ def test_dashboard_renders(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "<html" in r.text
-    assert "Babel Tower" in r.text
+    assert "Subtitle This" in r.text
 
 
 def test_settings_page_renders(client):

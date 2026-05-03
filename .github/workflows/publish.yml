@@ -8,7 +8,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/babel-tower-emby
+  IMAGE_NAME: ${{ github.repository_owner }}/subtitle-this
 
 jobs:
   build-and-push:
@@ -63,8 +63,8 @@ jobs:
             # Always-on SHA tag for traceability
             type=sha,prefix=${{ matrix.flavor }}-,format=short
           labels: |
-            org.opencontainers.image.title=babel-tower-emby
-            org.opencontainers.image.description=Speech-to-text + LLM translation service for Emby (${{ matrix.flavor }} flavor)
+            org.opencontainers.image.title=subtitle-this
+            org.opencontainers.image.description=Speech-to-text + LLM translation service for Emby, Jellyfin, and Plex (${{ matrix.flavor }} flavor)
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=MIT
 

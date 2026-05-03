@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
 # The endpoints registered below back the UI buttons (library "Subtitle this",
 # dashboard "Sweep") and the auto-refreshing jobs list — they're not meant as
 # a public CLI surface.
-app = FastAPI(title="Babel Tower", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Subtitle This", version="0.3.0", lifespan=lifespan)
 
 
 @app.get("/health")
