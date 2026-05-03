@@ -1,60 +1,62 @@
 """OpenVINO STT backend via optimum-intel.
 
-Uses Hugging Face Whisper exported to OpenVINO IR. The first call for a given
-model triggers download + IR conversion (slow, 5-30 min depending on size);
-subsequent calls hit the cached IR and run on the configured device.
+Loads a Whisper checkpoint as OpenVINO IR and drives it via
+`OVModelForSpeechSeq2Seq.generate()` directly, chunking the audio into
+30-second windows ourselves.
+
+Why direct generate() and not transformers.pipeline:
+The HF AutomaticSpeechRecognitionPipeline kept tensor inputs on CPU
+("Device set to use cpu" in the logs) while the OVModel ran on GPU.0,
+causing a CPU↔iGPU round-trip per generated token for the logits
+processors. On a 2h28 film with whisper-small that produced an effective
+RTF of ~0.32 (47 min real time on N305 iGPU) — versus the ~0.07 the iGPU
+is actually capable of when the pipeline overhead is gone. The transformers
+docs themselves flag the chunk_length_s + seq2seq combo as experimental
+and recommend going through model.generate() directly. So we do.
+
+Trade-off: we do simple non-overlapping 30s chunking (no stride). Words
+that straddle a chunk boundary may be split into two cues. Acceptable for
+v1; worth revisiting only if users report visible artifacts.
+
+Progress reporting is now true per-chunk i/N — no more cosmetic heartbeat,
+no more RTF history needed for estimation. Cancel between chunks is
+responsive (<= 1 chunk's worth, typically 1-3s on iGPU).
 """
 import logging
-import threading
-import time
+import math
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
-import soundfile as sf
+# numpy + soundfile are imported lazily inside transcribe() so the pure
+# parsing code (_parse_segments) is testable without those native deps.
+# The CPU-only flavor of the dev image doesn't ship them.
 
 from app.config import settings
-from app.pipeline import perf_history
 from app.pipeline.openvino_introspect import log_selected_device
 from app.pipeline.stt import Cue, TranscriptionResult
+
+
+_log = logging.getLogger("subtitle_this")
+_HF_PREFIX = "openai/whisper-"
+_CHUNK_SECONDS = 30
+_SAMPLE_RATE = 16000
+_CHUNK_SAMPLES = _CHUNK_SECONDS * _SAMPLE_RATE
 
 
 def _noop_progress(frac: float) -> None: ...
 def _noop_cancel() -> None: ...
 
 
-# Empirical real-time factors for OpenVINO Whisper on Intel iGPU (N100/N305
-# class hardware), per model. Used only to drive the cosmetic heartbeat —
-# the bar's slope is purely visual feedback, the actual finish time is
-# reported when the blocking pipe() call returns. If the estimate is too
-# fast the bar plateaus at HEARTBEAT_CAP; if too slow it never quite reaches
-# the cap and jumps from wherever to 1.0 at the end. Model-keyed so the
-# slope roughly matches reality for each whisper size — without this,
-# small/base would visibly plateau too early and large would crawl.
-_OPENVINO_RTF_BY_MODEL: dict[str, float] = {
-    "tiny": 0.04,
-    "base": 0.05,
-    "small": 0.07,
-    "medium": 0.12,
-    "large-v3-turbo": 0.12,
-    "large-v3": 0.20,
-}
-_DEFAULT_RTF = 0.10
-_HEARTBEAT_CAP = 0.95
-_HEARTBEAT_INITIAL = 0.02
-_HEARTBEAT_TICK_SECONDS = 4.0
-
-
-_log = logging.getLogger("subtitle_this")
-_HF_PREFIX = "openai/whisper-"
-
-
 @lru_cache(maxsize=2)
-def _pipeline(model_name: str, device: str, cache_root: str):
-    """Cache keyed by config so settings changes reload the pipeline.
-    Heavy imports stay inside so the CPU backend doesn't pay them at import time."""
+def _model_and_processor(model_name: str, device: str, cache_root: str):
+    """Cache keyed by config so settings changes reload cleanly. Heavy
+    imports stay inside so the CPU backend doesn't pay them at import time.
+
+    Returns (OVModelForSpeechSeq2Seq, AutoProcessor)."""
     from optimum.intel import OVModelForSpeechSeq2Seq
-    from transformers import AutoProcessor, pipeline as hf_pipeline
+    from transformers import AutoProcessor
 
     model_id = _HF_PREFIX + model_name
     cache_dir = Path(cache_root) / "openvino-models"
@@ -68,15 +70,42 @@ def _pipeline(model_name: str, device: str, cache_root: str):
         cache_dir=str(cache_dir),
     )
     log_selected_device("whisper:" + model_name, requested=device, model=model)
+    return model, processor
 
-    return hf_pipeline(
-        "automatic-speech-recognition",
-        model=model,
-        tokenizer=processor.tokenizer,
-        feature_extractor=processor.feature_extractor,
-        chunk_length_s=30,
-        return_timestamps=True,
-    )
+
+# Whisper auto-emits language tokens like <|en|>, <|fr|>, <|ja|> at the start
+# of the decoded output when no language is forced. This set lets us pick the
+# real language token out without false-positive matching on control tokens
+# like <|transcribe|> or <|notimestamps|>.
+_LANG_TOKEN_RE = re.compile(
+    r"<\|(en|fr|es|de|it|pt|ja|ko|zh|ru|ar|hi|tr|vi|th|pl|nl|sv|no|da|"
+    r"fi|cs|el|he|hu|ro|uk|id|ms|tl|ca|bn|fa|ur|tg|sk|sl|et|lv|lt|bg|mk|"
+    r"sr|hr|bs|sq|az|ka|hy|kk|ky|uz|mn|my|km|lo|am|ti|so|sw|yo|ig|ha)\|>"
+)
+
+
+def _parse_segments(decoded: str, time_offset_s: float) -> list[tuple[float, float, str]]:
+    """Parse a Whisper decoded-with-timestamps string into [(start, end, text)].
+
+    Whisper emits output as: <|0.00|>text<|2.50|>text<|5.00|>... — each
+    pair of timestamp markers brackets a segment. We pair successive
+    numeric markers and treat the text between them as the cue. Empty /
+    whitespace-only segments and zero-duration markers are dropped.
+
+    `time_offset_s` is added to every timestamp so chunked-mode callers
+    (every 30s window) can produce globally-correct timestamps without
+    re-walking the output.
+    """
+    markers = list(re.finditer(r"<\|(\d+\.\d+)\|>", decoded))
+    out: list[tuple[float, float, str]] = []
+    for i in range(len(markers) - 1):
+        m1, m2 = markers[i], markers[i + 1]
+        start = float(m1.group(1)) + time_offset_s
+        end = float(m2.group(1)) + time_offset_s
+        text = decoded[m1.end():m2.start()].strip()
+        if text and end > start:
+            out.append((start, end, text))
+    return out
 
 
 def transcribe(
@@ -86,71 +115,64 @@ def transcribe(
     progress: Callable[[float], None] = _noop_progress,
     check_cancel: Callable[[], None] = _noop_cancel,
 ) -> TranscriptionResult:
+    import numpy as np
+    import soundfile as sf
+
     audio, sr = sf.read(str(audio_path))
-    if sr != 16000:
-        raise RuntimeError(f"expected 16 kHz audio, got {sr} Hz")
+    if sr != _SAMPLE_RATE:
+        raise RuntimeError(f"expected {_SAMPLE_RATE} Hz audio, got {sr} Hz")
 
     check_cancel()
-    pipe = _pipeline(settings.whisper_model, settings.openvino_device, str(settings.cache_dir))
+    model, processor = _model_and_processor(
+        settings.whisper_model, settings.openvino_device, str(settings.cache_dir),
+    )
     check_cancel()
-    generate_kwargs: dict = {"task": "transcribe"}
-    if language_hint:
-        generate_kwargs["language"] = language_hint
 
-    # The HF pipeline takes the entire audio array and chunks internally —
-    # no per-chunk callback is exposed. To avoid a UI bar that sits frozen
-    # at 12% for 10+ minutes, run a daemon "heartbeat" thread alongside the
-    # blocking pipe() call: it bumps progress every few seconds based on
-    # elapsed time vs. an estimated transcribe duration (audio_duration *
-    # RTF). Caps at HEARTBEAT_CAP so we never overshoot the real "done"
-    # signal. Pure cosmetic — the actual transcribe is unaffected.
-    audio_duration_s = len(audio) / sr
-    # Use the measured-on-this-host median RTF if we have past samples for
-    # this model, otherwise fall back to the baked-in table. Self-corrects
-    # to the user's hardware after 2-3 successful runs.
-    baked_default = _OPENVINO_RTF_BY_MODEL.get(settings.whisper_model, _DEFAULT_RTF)
-    rtf = perf_history.estimated_rtf(settings.whisper_model, default=baked_default)
-    estimated_total_s = max(30.0, audio_duration_s * rtf)
-    started = time.monotonic()
-
-    progress(_HEARTBEAT_INITIAL)
-    done = threading.Event()
-    def _heartbeat():
-        while not done.wait(timeout=_HEARTBEAT_TICK_SECONDS):
-            elapsed = time.monotonic() - started
-            frac = _HEARTBEAT_INITIAL + (elapsed / estimated_total_s) * (_HEARTBEAT_CAP - _HEARTBEAT_INITIAL)
-            progress(min(_HEARTBEAT_CAP, frac))
-    heartbeat = threading.Thread(target=_heartbeat, daemon=True)
-    heartbeat.start()
-    try:
-        result = pipe(audio, return_timestamps=True, generate_kwargs=generate_kwargs)
-    finally:
-        done.set()
-        heartbeat.join(timeout=2.0)
-    check_cancel()
-    # Record the measured RTF so the next run's heartbeat estimate is
-    # calibrated to this hardware. Skipped if audio_duration is degenerate.
-    elapsed_s = time.monotonic() - started
-    if audio_duration_s > 0:
-        perf_history.record_rtf(settings.whisper_model, elapsed_s / audio_duration_s)
-    progress(1.0)
-
+    n_chunks = max(1, math.ceil(len(audio) / _CHUNK_SAMPLES))
+    detected_lang: str | None = None
     cues: list[Cue] = []
-    for i, chunk in enumerate(result.get("chunks", [])):
-        ts = chunk.get("timestamp") or (None, None)
-        if ts[0] is None or ts[1] is None:
-            continue
-        text = (chunk.get("text") or "").strip()
-        if not text:
-            continue
-        cues.append(Cue(id=i, start=float(ts[0]), end=float(ts[1]), text=text))
+    next_id = 0
 
-    # The HF pipeline doesn't surface the language detected by Whisper. Two
-    # sources of truth for `language_hint` upstream:
-    # 1. ffprobe track tag (when the file is properly tagged)
-    # 2. faster-whisper-tiny language-detection pre-pass run by processor.py
-    #    when the track has no tag (see app/pipeline/lang_detect.py)
-    # The "en" fallback only triggers if BOTH the file is untagged AND the
-    # pre-pass returned nothing (e.g. silent or extremely noisy first 30s).
-    detected = language_hint or "en"
-    return TranscriptionResult(detected_language=detected, cues=cues)
+    generate_kwargs: dict = {"return_timestamps": True}
+    if language_hint:
+        # When the language is known, force it so Whisper doesn't try to
+        # auto-detect on each 30s chunk (which would waste a generated token
+        # AND occasionally pick wrong on quiet/silent windows).
+        generate_kwargs["language"] = language_hint
+        generate_kwargs["task"] = "transcribe"
+
+    for i in range(n_chunks):
+        check_cancel()
+        start_sample = i * _CHUNK_SAMPLES
+        end_sample = min(len(audio), start_sample + _CHUNK_SAMPLES)
+        chunk = audio[start_sample:end_sample]
+        # Whisper's mel feature extractor expects exactly 30s of audio.
+        # Pad the final partial chunk with zeros (silence). Whisper handles
+        # silence cleanly — emits no segments.
+        if len(chunk) < _CHUNK_SAMPLES:
+            chunk = np.pad(chunk, (0, _CHUNK_SAMPLES - len(chunk)))
+
+        features = processor.feature_extractor(
+            chunk, sampling_rate=_SAMPLE_RATE, return_tensors="pt",
+        )
+        token_ids = model.generate(features.input_features, **generate_kwargs)
+        decoded = processor.tokenizer.decode(
+            token_ids[0], skip_special_tokens=False, decode_with_timestamps=True,
+        )
+
+        chunk_offset_s = float(i * _CHUNK_SECONDS)
+        for start, end, text in _parse_segments(decoded, chunk_offset_s):
+            cues.append(Cue(id=next_id, start=start, end=end, text=text))
+            next_id += 1
+
+        if detected_lang is None:
+            m = _LANG_TOKEN_RE.search(decoded)
+            if m:
+                detected_lang = m.group(1)
+
+        progress((i + 1) / n_chunks)
+
+    return TranscriptionResult(
+        detected_language=language_hint or detected_lang or "en",
+        cues=cues,
+    )
