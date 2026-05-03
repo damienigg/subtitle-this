@@ -81,23 +81,47 @@ class ProcessResult:
     took_seconds: float
 
 
-def process(req: ProcessRequest) -> ProcessResult:
-    started = time.monotonic()
+def validate_mode_provider_combo(mode: str, translation_provider: str) -> None:
+    """The mode/provider invariants checkable without touching the media
+    file or the network. Single source of truth — used eagerly at job
+    submission (so the UI surfaces the error immediately on click) AND
+    defensively inside process() (so any settings drift between submission
+    and execution surfaces as the same error rather than a silent garbage
+    output). Raises BadRequest with the same message either way.
 
-    if req.mode not in SUPPORTED_MODES:
-        raise BadRequest(f"unknown mode {req.mode!r} (expected one of {SUPPORTED_MODES})")
-    if req.mode in MULTIMODAL_MODES:
-        if req.translation_provider not in ("llm", "claude"):
+    Heavier validation (vision-LLM api_key/endpoint presence) lives only
+    in process() since it's specific to actually building a client.
+    """
+    if mode not in SUPPORTED_MODES:
+        raise BadRequest(f"unknown mode {mode!r} (expected one of {SUPPORTED_MODES})")
+    if mode in MULTIMODAL_MODES:
+        if translation_provider != "llm":
             raise BadRequest(
-                f"mode={req.mode!r} requires translation_provider='llm' "
+                f"mode={mode!r} requires translation_provider='llm' "
                 "(only the LLM provider talks to a multimodal backend)."
             )
         if not settings.vision_llm_enabled:
             raise BadRequest(
-                f"mode={req.mode!r} requires the Vision LLM to be enabled. Configure a "
+                f"mode={mode!r} requires the Vision LLM to be enabled. Configure a "
                 "vision-capable model in Settings → Vision model and toggle vision_llm_enabled."
             )
-        # Validate the configured vision LLM has its credentials.
+        if mode == "cinematic" and not settings.translation_llm_supports_vision:
+            raise BadRequest(
+                "cinematic mode also attaches per-cue frames to the translation LLM. "
+                "Enable translation_llm_supports_vision in Settings, pick a vision-capable "
+                "translation model, or use scene mode instead."
+            )
+
+
+def process(req: ProcessRequest) -> ProcessResult:
+    started = time.monotonic()
+
+    validate_mode_provider_combo(req.mode, req.translation_provider)
+    if req.mode in MULTIMODAL_MODES:
+        # Validate the configured vision LLM has its credentials. This is
+        # process()-only (not in the shared validator) because it requires
+        # poking at the active Vision LLM type configuration, which is more
+        # detail than the submission-time fast-fail needs.
         v_type = (settings.vision_llm_type or "").lower()
         if v_type == "anthropic":
             if not settings.vision_llm_api_key:
@@ -111,14 +135,6 @@ def process(req: ProcessRequest) -> ProcessResult:
                     f"mode={req.mode!r} with vision_llm_type=openai_compat requires "
                     "vision_llm_endpoint to be set."
                 )
-        # Cinematic also attaches frames to the translation LLM, so that one
-        # also has to be vision-capable.
-        if req.mode == "cinematic" and not settings.translation_llm_supports_vision:
-            raise BadRequest(
-                "cinematic mode also attaches per-cue frames to the translation LLM. "
-                "Enable translation_llm_supports_vision in Settings, pick a vision-capable "
-                "translation model, or use scene mode instead."
-            )
 
     media = Path(req.media_path)
     if not media.exists():

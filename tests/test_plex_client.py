@@ -136,12 +136,27 @@ def _resp(payload: dict, status: int = 200) -> httpx.Response:
     return httpx.Response(status, json=payload)
 
 
-def test_health_returns_true_on_200():
+def test_health_probes_identity_endpoint():
+    """/identity is the canonical Plex probe — 200 means token works,
+    401 means bad/missing token. We don't want to call /  which 200s
+    even for unauthenticated requests."""
+    seen_paths = []
+
     def handler(req):
-        assert req.url.path == "/"
+        seen_paths.append(req.url.path)
         return _resp({"MediaContainer": {"machineIdentifier": "abc"}})
     pc = _client_with_mock(handler)
     assert pc.health() is True
+    assert seen_paths == ["/identity"]
+
+
+def test_health_returns_false_on_401():
+    """Bad token → /identity 401s → health is False (the old impl hit /
+    which 200s for unauth, so a misconfigured user got a green pill)."""
+    def handler(req):
+        return httpx.Response(401, text="invalid token")
+    pc = _client_with_mock(handler)
+    assert pc.health() is False
 
 
 def test_health_returns_false_on_500():

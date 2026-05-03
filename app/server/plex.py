@@ -70,8 +70,12 @@ class PlexClient(MediaServerClient):
     # ── Public API ────────────────────────────────────────────────────────────
 
     def health(self) -> bool:
+        # `/identity` is the canonical "who are you?" probe and 401s on a
+        # bad token, so a 200 means BOTH "server reachable" AND "our auth
+        # works". `/` would 200 even with no/bad token, which made the
+        # health pill green for misconfigured users.
         try:
-            r = self._http.get(f"{self._base}/")
+            r = self._http.get(f"{self._base}/identity")
             return r.status_code == 200
         except httpx.HTTPError:
             return False

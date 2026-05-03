@@ -4,8 +4,6 @@ These exercise routing, request parsing, and response shape — but stub the
 heavy externals (Emby HTTP, Whisper, LLM calls) so the tests run in seconds
 without network or models.
 """
-from unittest.mock import patch
-
 import pytest
 from fastapi.testclient import TestClient
 

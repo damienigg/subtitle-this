@@ -2,14 +2,20 @@
 to filesystem paths, runs the pipeline, writes .vtt next to media, refreshes
 the server's metadata so it picks up the new subtitle."""
 import asyncio
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Form, HTTPException
 from pydantic import BaseModel
 
+
+_log = logging.getLogger("subtitle_this")
+
 from app import jobs
 from app.config import settings
-from app.processor import ProcessRequest, process
+from app.processor import (
+    BadRequest, ProcessRequest, process, validate_mode_provider_combo,
+)
 from app.server import (
     MediaItem,
     MediaServerClient,
@@ -101,20 +107,14 @@ def submit_item_job(
 
     # Fail fast on mode/provider mismatch so the UI surfaces the error at
     # submission rather than after the job briefly queues and then fails.
-    if job_mode in ("scene", "cinematic"):
-        if provider not in ("llm", "claude"):
-            raise ValueError(
-                f"mode={job_mode!r} requires translation_provider='llm'."
-            )
-        if not settings.vision_llm_enabled:
-            raise ValueError(
-                f"mode={job_mode!r} requires the Vision LLM to be enabled in Settings."
-            )
-        if job_mode == "cinematic" and not settings.translation_llm_supports_vision:
-            raise ValueError(
-                "cinematic mode requires a vision-capable Translation LLM "
-                "(toggle translation_llm_supports_vision in Settings)."
-            )
+    # validate_mode_provider_combo is the single source of truth — also
+    # called inside process() defensively. Raises BadRequest; we re-raise
+    # as ValueError since this function's callers (UI routes) catch
+    # ValueError → HTTP 422.
+    try:
+        validate_mode_provider_combo(job_mode, provider)
+    except BadRequest as e:
+        raise ValueError(str(e)) from e
 
     media = Path(item.path)
     item_id = item.id
@@ -156,11 +156,9 @@ def submit_item_job(
                     media, result.source_track_index, result.detected_source_language
                 )
             except track_metadata.MetadataWriteError as e:
-                # Log to stderr so it shows up in `docker logs`. The job
+                # Logged to stderr (visible via `docker logs`). The job
                 # itself stays in 'succeeded' since the user got their .vtt.
-                import sys
-                print(f"[babel] tag write-back failed for {media}: {e}",
-                      file=sys.stderr, flush=True)
+                _log.warning("tag write-back failed for %s: %s", media, e)
 
         try:
             server.refresh_item(item_id)

@@ -56,9 +56,6 @@ def quick_fingerprint(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
-# Backward-compat alias so any external caller (and the previous test
-# suite) still works without churning import sites.
-file_fingerprint = quick_fingerprint
 
 
 def content_fingerprint(path: Path) -> str:

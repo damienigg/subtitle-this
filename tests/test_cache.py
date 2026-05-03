@@ -4,23 +4,23 @@ from pathlib import Path
 from app import cache
 
 
-def test_file_fingerprint_stable(tmp_path):
+def test_quick_fingerprint_stable(tmp_path):
     p = tmp_path / "movie.mkv"
     p.write_bytes(b"x" * 100)
-    f1 = cache.file_fingerprint(p)
-    f2 = cache.file_fingerprint(p)
+    f1 = cache.quick_fingerprint(p)
+    f2 = cache.quick_fingerprint(p)
     assert f1 == f2
 
 
-def test_file_fingerprint_changes_on_mtime(tmp_path):
+def test_quick_fingerprint_changes_on_mtime(tmp_path):
     import os, time
     p = tmp_path / "movie.mkv"
     p.write_bytes(b"x")
-    f1 = cache.file_fingerprint(p)
+    f1 = cache.quick_fingerprint(p)
     # Bump mtime by 1 second
     new_time = p.stat().st_mtime + 1
     os.utime(p, (new_time, new_time))
-    f2 = cache.file_fingerprint(p)
+    f2 = cache.quick_fingerprint(p)
     assert f1 != f2
 
 

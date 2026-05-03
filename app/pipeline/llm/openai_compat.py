@@ -4,9 +4,16 @@ http server, and LM Studio — anyone who speaks Chat Completions."""
 import base64
 import json
 
+import openai
+
 from app.pipeline.llm.base import (
     ContentBlock, ImageContent, LLMError, SystemBlock, TextContent,
 )
+
+
+# Aligned with AnthropicLLM: explicit timeout so a wedged backend doesn't
+# park a job indefinitely. 5 min is generous for a 30-cue batch generation.
+_LLM_TIMEOUT_SECONDS = 300
 
 
 class OpenAICompatLLM:
@@ -20,15 +27,12 @@ class OpenAICompatLLM:
     ) -> None:
         if not base_url:
             raise LLMError("OpenAI-compat base URL is not set")
-        try:
-            from openai import OpenAI
-        except ImportError as e:
-            raise LLMError("openai SDK is not installed in this image") from e
         # Many local servers (Ollama, LocalAI) don't authenticate; the SDK
         # still requires a non-empty key, so substitute a placeholder.
-        self._client = OpenAI(
+        self._client = openai.OpenAI(
             base_url=base_url.rstrip("/"),
             api_key=api_key or "not-required",
+            timeout=_LLM_TIMEOUT_SECONDS,
         )
         self._model = model
         self._supports_vision = supports_vision
@@ -82,7 +86,11 @@ class OpenAICompatLLM:
 
         try:
             response = self._client.chat.completions.create(**kwargs)
-        except Exception as e:
+        except openai.OpenAIError as e:
+            # Symmetric with AnthropicLLM's `except anthropic.APIError`.
+            # Bare `except Exception` was masking unrelated bugs as
+            # LLMErrors; OpenAIError is the parent of every networking,
+            # auth, rate-limit, and API-level failure the SDK raises.
             raise LLMError(f"OpenAI-compat API error ({type(e).__name__}): {e}") from e
 
         if not response.choices:

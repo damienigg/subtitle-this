@@ -3,18 +3,22 @@ adaptive thinking, prompt caching, strict JSON-schema output enforcement."""
 import base64
 
 import anthropic
-from anthropic import Anthropic
 
 from app.pipeline.llm.base import (
     ContentBlock, ImageContent, LLMError, SystemBlock, TextContent,
 )
 
 
+# Aligned with OpenAICompatLLM: explicit timeout so a wedged backend doesn't
+# park a job indefinitely. 5 min is generous for a 30-cue batch generation.
+_LLM_TIMEOUT_SECONDS = 300
+
+
 class AnthropicLLM:
     def __init__(self, *, api_key: str, model: str) -> None:
         if not api_key:
             raise LLMError("Anthropic API key is not set")
-        self._client = Anthropic(api_key=api_key)
+        self._client = anthropic.Anthropic(api_key=api_key, timeout=_LLM_TIMEOUT_SECONDS)
         self._model = model
 
     def supports_vision(self) -> bool:

@@ -7,8 +7,6 @@ compat alongside its newer Authorization: MediaBrowser scheme), so a single
 client implementation serves both — the user just picks their server type in
 Settings for the badge label and a couple of UI hints.
 """
-from typing import Iterable
-
 import httpx
 
 from app.server.base import (
@@ -52,14 +50,13 @@ class EmbyJellyfinClient(MediaServerClient):
     def list_videos(
         self,
         *,
-        types: Iterable[str] = ("Movie", "Episode"),
         start_index: int = 0,
         limit: int = 200,
         search_term: str | None = None,
     ) -> MediaPage:
         params: dict = {
             "Recursive": "true",
-            "IncludeItemTypes": ",".join(types),
+            "IncludeItemTypes": "Movie,Episode",
             "Fields": "Path,MediaStreams",
             "StartIndex": start_index,
             "Limit": limit,
