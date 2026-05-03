@@ -84,20 +84,14 @@
 {% include "_jobs_table.html" %}
 
 <section>
-  <h2>How to trigger a job</h2>
-  <p>Three ways to start a job (besides the per-item button on the <a href="/library">Library</a> page):</p>
+  <h2>How to subtitle a film</h2>
+  <p>Two manual flows from the UI — Babel Tower never auto-translates anything on its own:</p>
   <ol>
-    <li><strong>From an Emby item id</strong> (defaults from Settings; override per call as query params):
-      <pre>curl -X POST 'http://&lt;host&gt;:8765/api/process/&lt;EMBY_ITEM_ID&gt;?target_lang=fr&amp;mode=scene'</pre>
-    </li>
-    <li><strong>From a media path</strong> (no Emby needed):
-      <pre>curl -X POST http://&lt;host&gt;:8765/transcribe-translate \
-  -H 'Content-Type: application/json' \
-  -d '{"media_path": "/mnt/media/movie.mkv", "target_lang": "fr"}'</pre>
-    </li>
-    <li><strong>Auto-trigger on new items</strong>: in Emby admin → Server Settings → Notifications → Add Notification → Webhook,
-      set the URL to <code>http://&lt;host&gt;:8765/webhook/emby</code>. If you set a <code>webhook_secret</code> in Settings,
-      add the matching <code>X-Babel-Token</code> header in Emby's webhook config.</li>
+    <li><strong>Per item</strong>: open <a href="/library">Library</a>, find the item you want,
+      click <strong>Subtitle this</strong>. The job appears below in the jobs list.</li>
+    <li><strong>Whole library</strong>: hit <strong>Sweep library</strong> above. One job is
+      queued for every item missing a subtitle in your default target language
+      (<strong>{{ settings.default_target_lang }}</strong>). Already-subtitled items are skipped.</li>
   </ol>
 </section>
 {% endblock %}

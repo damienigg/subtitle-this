@@ -1,7 +1,7 @@
 """In-memory job tracking with serialized execution.
 
 A single asyncio.Lock serializes the heavy work (Whisper + translation) so
-parallel webhook fires don't thrash RAM/iGPU. Jobs are kept in memory; restart
+back-to-back UI clicks don't thrash RAM/iGPU. Jobs are kept in memory; restart
 loses in-flight state. Acceptable for now; swap for sqlite if persistence matters.
 
 The main event loop is captured at app startup (see app/main.py:lifespan) so
@@ -72,8 +72,7 @@ def submit(
     """Queue a job; runner does the actual work and updates the job in place.
 
     Safe to call from sync (threadpool) routes — schedules onto the main loop
-    via run_coroutine_threadsafe. The async webhook handler also calls this
-    and gets the same scheduling path; create_task would only work for that one.
+    via run_coroutine_threadsafe.
     """
     job = Job(
         id=uuid.uuid4().hex[:12],

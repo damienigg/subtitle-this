@@ -6,8 +6,6 @@ from fastapi import FastAPI
 from app import jobs
 from app.api.manage import router as manage_router
 from app.api.settings_api import router as settings_router
-from app.api.transcribe import router as transcribe_router
-from app.api.webhook import router as webhook_router
 from app.ui.routes import router as ui_router
 
 
@@ -18,6 +16,13 @@ async def lifespan(app: FastAPI):
     yield
 
 
+# Subtitle creation is exclusively a manual user action through the web UI.
+# We deliberately do NOT expose:
+# - an Emby webhook receiver (no auto-triggering on item-added events)
+# - a path-based /transcribe-translate endpoint (no curl-driven workflow)
+# The endpoints registered below back the UI buttons (library "Subtitle this",
+# dashboard "Sweep") and the auto-refreshing jobs list — they're not meant as
+# a public CLI surface.
 app = FastAPI(title="Babel Tower", version="0.2.0", lifespan=lifespan)
 
 
@@ -26,8 +31,6 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-app.include_router(transcribe_router)
 app.include_router(manage_router)
 app.include_router(settings_router)
-app.include_router(webhook_router)
 app.include_router(ui_router)

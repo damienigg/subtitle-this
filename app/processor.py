@@ -1,5 +1,7 @@
-"""Core pipeline orchestrator. Both the public /transcribe-translate API and
-the Emby-driven job runner call into here, so behavior stays consistent.
+"""Core pipeline orchestrator. The Emby-driven job runner (queued via the
+UI's per-item "Subtitle this" button or the dashboard's "Sweep library"
+button) calls into here. Subtitle creation is exclusively a manual user
+action — there is no auto-trigger or path-based CLI flow.
 
 Modes:
 - `audio` — Whisper → text translator. No vision.
@@ -48,10 +50,6 @@ class NoSuitableTrack(ProcessError):
 
 
 class BadRequest(ProcessError):
-    pass
-
-
-class NotImplementedYet(ProcessError):
     pass
 
 

@@ -51,7 +51,8 @@ class _EnvSettings(BaseSettings):
     max_line_chars: int = 42
     max_lines_per_cue: int = 2
 
-    # Defaults applied to webhook-triggered and UI-triggered jobs
+    # Defaults applied when the user clicks "Subtitle this" or "Sweep library"
+    # in the web UI without overriding per-item.
     default_target_lang: str = "fr"
     default_source_lang_priority: list[str] = ["en", "ja", "*"]
     # Default provider is `nllb`: free, fully local, no account, no API key.
@@ -87,9 +88,6 @@ class _EnvSettings(BaseSettings):
     emby_url: str | None = None
     emby_api_key: str | None = None
 
-    # If set, the /webhook/emby endpoint requires `X-Babel-Token: <secret>`.
-    webhook_secret: str | None = None
-
 
 # Set of fields that are sensitive — masked in UI GET responses, password input on edit.
 SENSITIVE_FIELDS: set[str] = {
@@ -97,7 +95,6 @@ SENSITIVE_FIELDS: set[str] = {
     "vision_llm_api_key",
     "deepl_api_key",
     "emby_api_key",
-    "webhook_secret",
 }
 
 # Set of fields the UI cannot edit (operator-only via env).

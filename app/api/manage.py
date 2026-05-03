@@ -15,8 +15,7 @@ router = APIRouter(prefix="/api")
 
 
 def emby_client() -> EmbyClient:
-    """Build a fresh Emby client from current settings. Raises 412 if unconfigured;
-    other endpoints (and the webhook receiver) share this entry point."""
+    """Build a fresh Emby client from current settings. Raises 412 if unconfigured."""
     if not settings.emby_url or not settings.emby_api_key:
         raise HTTPException(412, "Emby URL and API key are not configured (set them in Settings)")
     return EmbyClient(settings.emby_url, settings.emby_api_key)
@@ -72,9 +71,9 @@ def submit_item_job(
     mode: str | None = None,
     skip_if_target_audio_exists: bool | None = None,
 ) -> jobs.Job:
-    """Queue a job for an Emby item. Used by the manual endpoint, the webhook,
-    and the library sweep — all three share the same defaults-from-settings
-    fallback semantics."""
+    """Queue a job for an Emby item. Used by both UI flows (per-item "Subtitle
+    this" button and the dashboard's "Sweep library") — both share the same
+    defaults-from-settings fallback semantics."""
     if not item.path:
         raise ValueError(f"item {item.id!r} has no path field")
 

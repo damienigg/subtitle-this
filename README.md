@@ -9,9 +9,8 @@ Auto-generates target-language subtitles for media in your Emby library — YouT
 ```
                            ┌──────────────────────────────────────────┐
                            │ babel-tower-emby (FastAPI, Docker)       │
-   user (web UI / curl) ──▶│  Web UI (Jinja2 — settings, library,     │
+   user (web UI) ─────────▶│  Web UI (Jinja2 — settings, library,     │
                            │            jobs, sweep)                  │
-                           │  REST API                                │
    Emby Server ◀───────────│  Emby REST client (httpx)                │
    (path resolve,          │  Pipeline: ffprobe + ffmpeg              │
     metadata refresh)      │     → Whisper (CPU or OpenVINO iGPU)     │
@@ -21,10 +20,10 @@ Auto-generates target-language subtitles for media in your Emby library — YouT
                            └──────────────────────────────────────────┘
 ```
 
-Babel Tower is the single integration point. Triggers come from three places:
-- **Web UI** at `http://<host>:8765/` — settings, status, manual jobs, library sweep
-- **REST API** — `POST /api/process/{embyItemId}` or `POST /transcribe-translate` (path-based)
-- **Emby webhook** — `/webhook/emby` auto-triggers on `ItemAdded`
+**Subtitle creation is exclusively a manual user action through the web UI.** Babel Tower deliberately does NOT expose a webhook receiver, an auto-trigger on Emby's `ItemAdded` events, or a path-based curl endpoint. The two ways to create subtitles, both in the UI:
+
+- **Per item** — open `/library`, find an item, click *Subtitle this*.
+- **Whole library** — on the dashboard, click *Sweep library* to queue jobs for every item missing a subtitle in your default target language.
 
 ## What you do as a user
 
@@ -212,44 +211,22 @@ The web UI shows:
 
 Settings persist to `/cache/settings.json` and override env defaults from compose.
 
-## Triggering a job
+## Creating subtitles
 
-Four ways:
+Two flows, both in the UI. There is no auto-trigger on item-added events, no webhook, no path-based curl endpoint — every subtitle is the result of a deliberate user action.
 
-```sh
-# (a) From an Emby item id — Babel Tower resolves the path, runs the pipeline,
-#     writes the .vtt next to media, and refreshes Emby metadata.
-#     All parameters (target_lang, mode, translation_provider) are optional
-#     query params; omitted values fall back to Settings defaults.
-curl -X POST http://localhost:8765/api/process/<EMBY_ITEM_ID>
-curl -X POST 'http://localhost:8765/api/process/<EMBY_ITEM_ID>?target_lang=fr&mode=scene'
+### Per item
 
-# (b) From a media path directly — useful for ad-hoc testing without Emby
-curl -X POST http://localhost:8765/transcribe-translate \
-  -H 'Content-Type: application/json' \
-  -d '{"media_path": "/mnt/media/movies/test.mkv", "target_lang": "fr"}'
+1. Open `/library`.
+2. Optional: filter to *missing target-language subtitle* and search for the item you care about.
+3. Click *Subtitle this* on the row. A job appears immediately on the dashboard's *Recent jobs* table and processes in the background.
 
-# (c) Library sweep — queue a job for every item missing a target-lang subtitle.
-#     Same button is on the dashboard; this is the curl equivalent.
-curl -X POST 'http://localhost:8765/api/sweep?target_lang=fr&limit=500'
+### Whole library (sweep)
 
-# (d) Browse Emby items and their subtitle status:
-curl http://localhost:8765/api/emby/items?target_lang=fr
-```
+1. On the dashboard, click *Sweep library*.
+2. Babel Tower queues one job per item missing a subtitle in your default target language. Already-subtitled items are skipped. Jobs run one at a time so the iGPU doesn't thrash.
 
-After the first call for a given file, the result is cached (keyed by file fingerprint + target lang + provider + mode + STT model + translation/vision LLM model ids). Re-runs return instantly. Switching the configured LLM in the UI invalidates the cache automatically.
-
-## Auto-trigger on new items (Emby webhook)
-
-In Emby admin → **Server Settings → Notifications → Add Notification → Webhook**:
-
-| Field | Value |
-| --- | --- |
-| URL | `http://<host>:8765/webhook/emby` |
-| Request Headers (optional) | `X-Babel-Token: <your webhook_secret value>` |
-| Events | check **New Media Added** (and optionally **Library Scan Complete**) |
-
-Babel Tower's webhook handler is tolerant of payload shape variations across Emby versions — it looks for the item ID in `Item.Id`, `ItemId`, etc., filters to video item types (`Movie` / `Episode`), and ignores non-add events. If you set the `webhook_secret` in Settings, requests without the matching `X-Babel-Token` header are rejected with 401.
+After a job finishes, the result is cached (keyed by file fingerprint + target lang + provider + mode + STT model + translation/vision LLM model ids). Click *Subtitle this* again on the same item and it returns instantly. Switching the configured LLM in Settings invalidates the cache automatically.
 
 ## Generating an Emby API key
 
@@ -370,9 +347,9 @@ Everything below is **optional**. The web UI covers the same surface and is the 
 | `BABEL_TRANSLATION_BATCH_SIZE` | `30`                 | Cues per LLM API call (text-only mode)                                  |
 | `BABEL_MAX_LINE_CHARS`         | `42`                 | Subtitle line wrap width                                                 |
 | `BABEL_MAX_LINES_PER_CUE`      | `2`                  | Max display lines per cue (overflow merges into the last line, never drops content) |
-| `BABEL_DEFAULT_TARGET_LANG`    | `fr`                 | Default target language for UI / webhook / sweep jobs                   |
+| `BABEL_DEFAULT_TARGET_LANG`    | `fr`                 | Default target language for per-item and sweep jobs                     |
 | `BABEL_DEFAULT_SOURCE_LANG_PRIORITY` | `["en","ja","*"]` | Source-language preference for track selection (JSON list)             |
-| `BABEL_DEFAULT_TRANSLATION_PROVIDER` | `nllb`       | Default provider for UI / webhook / sweep jobs (`nllb`/`deepl`/`llm`). Default `nllb` is free, local, no key — works on both image flavors out of the box. |
+| `BABEL_DEFAULT_TRANSLATION_PROVIDER` | `nllb`       | Default provider for per-item and sweep jobs (`nllb`/`deepl`/`llm`). Default `nllb` is free, local, no key — works on both image flavors out of the box. |
 | `BABEL_DEFAULT_MODE`           | `audio`              | Default quality tier — `audio` / `scene` / `cinematic`                  |
 | `BABEL_SCENE_DETECTION_THRESHOLD` | `0.4`             | ffmpeg scene-detection threshold (0–1, lower = more scenes)              |
 | `BABEL_SCENE_MIN_LENGTH_SECONDS` | `1.5`              | Skip scenes shorter than this many seconds                               |
@@ -385,7 +362,6 @@ Everything below is **optional**. The web UI covers the same surface and is the 
 | `BABEL_DEFAULT_SKIP_IF_TARGET_AUDIO_EXISTS` | `true` | Skip when target-language audio is already in the file                   |
 | `BABEL_EMBY_URL`               | (unset)              | Emby server base URL (e.g. `http://emby:8096`)                           |
 | `BABEL_EMBY_API_KEY`           | (unset)              | Emby admin API key (Server Settings → Advanced → API Keys)              |
-| `BABEL_WEBHOOK_SECRET`         | (unset)              | If set, `/webhook/emby` requires `X-Babel-Token: <this value>`         |
 | `BABEL_DEEPL_API_KEY`          | (unset)              | DeepL API key. Free-tier keys end in `:fx` (auto-detected)              |
 
 ## Defaults and tradeoffs
@@ -394,6 +370,7 @@ Everything below is **optional**. The web UI covers the same surface and is the 
 - **OpenVINO first-run is slow.** The IR conversion for `large-v3-turbo` takes 15–30 min on the N305 and produces ~3 GB of IR files. Subsequent runs hit the cache and start in seconds. Watch the container logs the first time.
 - **OpenVINO language detection is limited.** The HF pipeline doesn't surface Whisper's detected language — we trust the ffprobe track tag. If a file's audio is untagged or mistagged, transcription quality may suffer. The `cpu` backend (faster-whisper) does full language detection and is the more reliable fallback for tag-poor libraries.
 - **Path-based contract:** the app reads media files directly from disk. Mount the same path inside the container that Emby sees. No file uploads over HTTP.
+- **Manual-trigger only:** subtitle creation is always an explicit user action in the UI. There is no webhook, no auto-trigger on Emby `ItemAdded`, no path-based curl endpoint. This is a deliberate scope decision — the goal is for the user to decide when each title gets translated.
 - **Cache hygiene.** The `./cache/` bind-mount holds three things: model weights (faster-whisper / OpenVINO IR / NLLB; can be tens of GB), per-file transcript JSON (small, one per `(file, target, mode, provider, llm-model)` combo), and the UI-mutated `settings.json`. Nothing currently expires — clear `cache/` to force a clean re-run, but be aware that re-conversion of OpenVINO IR is slow.
 
 ## Tests
@@ -419,7 +396,9 @@ tests/
 ├── test_jobs.py               Job dataclass, eviction, missing-loop guard
 ├── test_processor.py          Mode validation gates
 └── test_smoke_api.py          /health, /api/settings, /api/jobs, /api/process,
-                               /api/sweep, /webhook/emby, dashboards, library, partials
+                               /api/sweep, dashboards, library, partials, plus
+                               regression tests confirming /webhook/emby and
+                               /transcribe-translate are absent (404)
 ```
 
 ## Layout
@@ -440,8 +419,7 @@ babel-tower-emby/
     ├── jobs.py                     In-memory job queue (single-worker async)
     ├── processor.py                Pipeline orchestrator (called from API + UI)
     ├── api/
-    │   ├── transcribe.py           POST /transcribe-translate (path-based)
-    │   ├── manage.py               Emby-driven endpoints + jobs
+    │   ├── manage.py               Emby-driven endpoints (back the UI buttons)
     │   └── settings_api.py         GET/PATCH /api/settings
     ├── emby/
     │   └── client.py               Minimal Emby REST client

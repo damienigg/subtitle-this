@@ -110,46 +110,21 @@ def test_sweep_endpoint_412_when_emby_unconfigured(client, monkeypatch):
     assert r.status_code == 412
 
 
-def test_webhook_rejects_non_json(client):
-    r = client.post("/webhook/emby", content="not json", headers={"Content-Type": "text/plain"})
-    assert r.status_code == 400
+def test_webhook_endpoint_does_not_exist(client):
+    """Webhook receiver was removed — subtitle creation is exclusively a manual
+    UI action. POSTs to the old endpoint must 404 (not 405 / not 401)."""
+    r = client.post("/webhook/emby", json={"Event": "library.new", "Item": {"Id": "1"}})
+    assert r.status_code == 404
 
 
-def test_webhook_rejects_wrong_secret(client, monkeypatch):
-    from app.config import settings
-    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "webhook_secret": "shh"})
-    r = client.post("/webhook/emby", json={"Event": "library.new", "Item": {"Id": "1"}},
-                    headers={"X-Babel-Token": "wrong"})
-    assert r.status_code == 401
-
-
-def test_webhook_accepts_correct_secret_then_skips_bad_event(client, monkeypatch):
-    from app.config import settings
-    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "webhook_secret": "shh"})
-    r = client.post("/webhook/emby", json={"Event": "user.login"},
-                    headers={"X-Babel-Token": "shh"})
-    assert r.status_code == 200
-    assert r.json()["submitted"] is False
-
-
-def test_transcribe_endpoint_returns_404_for_missing_path(client):
-    """Without mocking, the path won't exist and we should see 404."""
+def test_transcribe_translate_endpoint_does_not_exist(client):
+    """The path-based curl endpoint was removed — only the Emby-item-driven
+    /api/process/{id} (UI-backed) remains."""
     r = client.post("/transcribe-translate", json={
         "media_path": "/totally/nonexistent/file.mkv",
         "target_lang": "fr",
     })
     assert r.status_code == 404
-
-
-def test_transcribe_endpoint_returns_400_for_bad_mode(client, tmp_path):
-    f = tmp_path / "x.mkv"
-    f.write_bytes(b"\x00" * 16)
-    r = client.post("/transcribe-translate", json={
-        "media_path": str(f),
-        "target_lang": "fr",
-        "mode": "lol-not-a-real-mode",
-    })
-    assert r.status_code == 400
 
 
 def test_dashboard_renders(client):

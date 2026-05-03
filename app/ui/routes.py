@@ -332,10 +332,6 @@ _FIELD_META: list[dict[str, Any]] = [
     {"key": "emby_api_key", "section": "Emby",
      "label": "Emby API key", "type": "password",
      "help": "Generate in Emby admin → Server Settings → Advanced → API Keys."},
-    {"key": "webhook_secret", "section": "Emby",
-     "label": "Webhook shared secret (optional)", "type": "password",
-     "help": "If set, /webhook/emby requires header X-Babel-Token: <this value>. Configure "
-             "the matching header in Emby's webhook notification."},
 
     # ── API keys ──────────────────────────────────────────────────────────────
     {"key": "deepl_api_key", "section": "API keys",

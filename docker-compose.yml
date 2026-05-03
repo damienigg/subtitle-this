@@ -45,7 +45,6 @@ services:
       BABEL_WHISPER_MODEL: ${BABEL_WHISPER_MODEL:-small}
       BABEL_OPENVINO_DEVICE: ${BABEL_OPENVINO_DEVICE:-GPU}
       BABEL_NLLB_MODEL: ${BABEL_NLLB_MODEL:-facebook/nllb-200-distilled-600M}
-      BABEL_WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       # Translation model — translates subtitle cues
       BABEL_TRANSLATION_LLM_TYPE: ${BABEL_TRANSLATION_LLM_TYPE:-anthropic}
       BABEL_TRANSLATION_LLM_MODEL: ${BABEL_TRANSLATION_LLM_MODEL:-claude-opus-4-7}
