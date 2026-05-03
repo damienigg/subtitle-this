@@ -294,14 +294,16 @@ The TrueNAS Apps UI doesn't reliably run `build:` — paste-into-Custom-App work
 
 **Image tags published:**
 
-| Tag                        | What                                                    |
-| -------------------------- | ------------------------------------------------------- |
-| `:openvino` / `:cpu`       | Moving "latest from main branch" pointer per flavor     |
-| `:1.2.3-openvino`          | Pinned release (when you push a `v1.2.3` git tag)       |
-| `:1.2-openvino`            | Floating major.minor                                    |
-| `:openvino-sha-abc1234`    | Pinned to a specific commit, for traceability/rollback  |
+| Tag                        | What                                                    | Retention |
+| -------------------------- | ------------------------------------------------------- | --------- |
+| `:openvino` / `:cpu`       | Moving "latest from main branch" pointer per flavor     | Always (only the most recent build kept) |
+| `:1.2.3-openvino`          | Pinned release (when you push a `v1.2.3` git tag)       | **Forever** — protected by the retention regex |
+| `:1.2-openvino`            | Floating major.minor                                    | **Forever** — protected by the retention regex |
+| `:openvino-sha-abc1234`    | Per-commit SHA tag from a main-branch build             | Pruned by the next main-branch build |
 
-For production deployments, pin to a specific version tag rather than `:openvino` to avoid surprise updates.
+**GHCR retention.** Each main-branch build runs `actions/delete-package-versions` after the push to keep only the latest 2 versions of the `subtitle-this` package (one cpu + one openvino). Old SHA-pinned versions get cleaned up automatically — the openvino image is several GB, so without this the storage adds up fast. Release-tagged versions (matching `v?\d+\.\d+(\.\d+)?(-(cpu|openvino))?`) are explicitly excluded from pruning, so when you publish a `v1.2.3` tag the resulting `1.2.3-cpu` and `1.2.3-openvino` images stay forever.
+
+For production deployments, pin to a specific version tag rather than `:openvino` — that gets you reproducibility AND insulation from the auto-prune.
 
 ### TrueNAS dataset write permissions
 

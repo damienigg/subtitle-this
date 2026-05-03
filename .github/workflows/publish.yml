@@ -9,6 +9,12 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/subtitle-this
+  # GHCR retention. After every successful build we prune the package so
+  # only the most recent N versions stay online — old SHA-pinned versions
+  # accumulate disk fast (the openvino image alone is several GB). Versions
+  # tagged with a release semver (e.g. 1.2.3-openvino) are protected by
+  # ignore-versions and never deleted regardless of count.
+  KEEP_LATEST_N_VERSIONS: '2'
 
 jobs:
   build-and-push:
@@ -79,3 +85,29 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.flavor }}
           cache-to: type=gha,mode=max,scope=${{ matrix.flavor }}
+
+  prune-old-versions:
+    name: Prune old GHCR versions
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    # Only prune on main-branch pushes — when the user tags a release we
+    # WANT to keep older versions around for reproducibility.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      packages: write
+    steps:
+      - name: Delete old container versions
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: subtitle-this
+          package-type: container
+          # Versions sorted newest-first; this many of the newest are kept.
+          # With both flavors (cpu + openvino) building in parallel each
+          # push, set to 2 → keep just the latest pair, prune everything
+          # else. Bump to 4 if you want a one-rollback safety buffer.
+          min-versions-to-keep: ${{ fromJSON(env.KEEP_LATEST_N_VERSIONS) }}
+          # Protect any release-tagged version (e.g. 1.2.3-cpu, 1.2-openvino)
+          # from deletion — those are pinned references users may pull
+          # against and shouldn't disappear when a new main-branch build
+          # rolls in.
+          ignore-versions: '^v?\d+\.\d+(\.\d+)?(-(cpu|openvino))?$'
