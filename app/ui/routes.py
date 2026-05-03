@@ -191,15 +191,18 @@ _FIELD_META: list[dict[str, Any]] = [
      "help": "If the file already has audio in the target language, do nothing. Saves "
              "compute on items where the user can just switch audio track in their player."},
     {"key": "write_detected_language_to_file", "section": "Defaults",
-     "label": "Tag detected source language back into the source file", "type": "checkbox",
+     "label": "Tag detected source language back into the source file (MKV only)", "type": "checkbox",
      "help": "When a film's audio track has no language tag (Emby just shows 'Audio') we "
              "always run a Whisper-tiny pre-pass to detect the language for the transcription "
              "itself. With this checkbox ON, we ALSO write that language back into the file's "
-             "audio-stream metadata so Emby shows e.g. 'French' on next probe. MKV/MKA/WebM "
-             "are edited in place via mkvpropedit (instant, no remux). MP4/MOV/AVI/… are "
-             "remuxed via ffmpeg -c copy (no re-encode but I/O bound). Turn off to keep "
-             "source files completely untouched — detected language still drives the "
-             "transcription, just doesn't get persisted back."},
+             "EBML header via `mkvpropedit` — instant, modifies only metadata, NEVER touches "
+             "the audio/video data sections. Restricted to MKV/MKA/WebM. Non-Matroska "
+             "containers (MP4/MOV/AVI/...) are deliberately left untouched: an ffmpeg remux "
+             "would technically preserve audio byte-for-byte but rewrites the whole file with "
+             "documented edge cases (timestamp re-derivation, lost custom metadata) — not "
+             "worth the risk on a media library. Detection still drives transcription "
+             "correctness regardless of container; only the persist-to-Emby step is skipped "
+             "for non-MKV. Turn off entirely to keep all source files completely pristine."},
 
     # ── Translation (provider-agnostic params) ────────────────────────────────
     {"key": "nllb_model", "section": "Translation",

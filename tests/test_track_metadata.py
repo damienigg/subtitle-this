@@ -63,31 +63,32 @@ def test_mkv_dispatches_to_mkvpropedit_with_audio_track_position(tmp_path):
     assert "language=fra" in mkv_call
 
 
-def test_mp4_dispatches_to_ffmpeg_with_zero_based_audio_index(tmp_path):
-    """For MP4/MOV/AVI/etc, we use ffmpeg -c copy. The -metadata:s:a:N flag
-    uses 0-based indexing within audio streams."""
+def test_non_matroska_container_refuses_safely(tmp_path):
+    """We deliberately don't ffmpeg-remux non-Matroska files just to tag a
+    track — too much risk of subtle issues (timestamp re-derivation, lost
+    custom metadata, fenêtre d'écriture sur le fichier source). Instead we
+    raise a clear, recoverable error with the file untouched."""
     f = tmp_path / "movie.mp4"
     f.write_bytes(b"\x00")
-    calls = []
 
-    def run_stub(cmd, **kwargs):
-        calls.append(cmd)
-        if cmd[0] == "ffprobe":
-            return _fake_ffprobe([1, 2])
-        if cmd[0] == "ffmpeg":
-            # Pretend the remux succeeded — write a tmp file so shutil.move works.
-            tmp_arg = cmd[-1]
-            Path(tmp_arg).write_bytes(b"\x01")
-            return _ok_proc()
-        raise AssertionError(f"unexpected subprocess call: {cmd[0]}")
+    with patch("subprocess.run") as run:
+        with pytest.raises(track_metadata.MetadataWriteError, match="MKV/MKA/WebM only"):
+            track_metadata.write_audio_language(f, 1, "fr")
+        # Crucially: we should NOT have shelled out to anything for non-MKV.
+        # The file must be left untouched.
+        assert run.call_count == 0
+    assert f.read_bytes() == b"\x00"   # untouched
 
-    with patch("subprocess.run", side_effect=run_stub):
-        # Tag the second audio stream (absolute index 2 → audio_pos=2 → ffmpeg N=1)
-        track_metadata.write_audio_language(f, 2, "ja")
 
-    ffmpeg_call = next(c for c in calls if c[0] == "ffmpeg")
-    assert "-metadata:s:a:1" in ffmpeg_call
-    assert any("language=jpn" in arg for arg in ffmpeg_call)
+def test_avi_and_mov_also_refused(tmp_path):
+    """Same protection for other non-Matroska containers."""
+    for ext in (".avi", ".mov", ".m4v", ".ts"):
+        f = tmp_path / f"movie{ext}"
+        f.write_bytes(b"\x00")
+        with patch("subprocess.run") as run:
+            with pytest.raises(track_metadata.MetadataWriteError, match="MKV/MKA/WebM only"):
+                track_metadata.write_audio_language(f, 1, "fr")
+            assert run.call_count == 0
 
 
 def test_non_audio_stream_raises(tmp_path):

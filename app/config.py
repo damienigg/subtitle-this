@@ -66,9 +66,20 @@ class _EnvSettings(BaseSettings):
     # When the source audio track has no language tag in the file's metadata,
     # Whisper's auto-detection still works for transcription itself. This flag
     # controls whether we ALSO write the detected ISO 639-2 code back into the
-    # source file's audio stream metadata (via mkvpropedit for MKV/MKA/WebM,
-    # ffmpeg -c copy for everything else) so Emby reads the right language on
-    # next probe. Best-effort — failures don't fail the subtitling job.
+    # source file's audio stream metadata so Emby reads the right language on
+    # next probe.
+    #
+    # Restricted to Matroska (.mkv/.mka/.webm) via `mkvpropedit`, which edits
+    # ONLY the EBML header — never touches audio/video data, no re-encode, no
+    # remux. For non-MKV containers (MP4/MOV/AVI/...) we deliberately skip the
+    # write-back: an `ffmpeg -c copy` remux would technically preserve the
+    # audio bitstream, but it rewrites the entire file and has known edge
+    # cases (timestamp re-derivation on weird MP4s, lost obscure metadata,
+    # full-I/O write window) that a media library shouldn't have to worry
+    # about. Detection still drives transcription correctness for those files;
+    # only the persist-to-Emby polish is skipped.
+    #
+    # Best-effort — failures don't fail the subtitling job.
     write_detected_language_to_file: bool = True
     # Quality tier: audio (default) | scene | cinematic.
     # `scene` adds an LLM-vision scene bible (one short description per shot)
