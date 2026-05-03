@@ -279,7 +279,10 @@ def process(
     # content of the film — mtime bumps and metadata-only edits don't
     # invalidate it, so we want the bible cache to survive those too.
     context = (
-        _build_context(req, cache_mod.content_fingerprint(media), transcription.cues)
+        _build_context(
+            req, cache_mod.content_fingerprint(media), transcription.cues,
+            check_cancel=check_cancel,
+        )
         if req.mode in MULTIMODAL_MODES else None
     )
 
@@ -318,6 +321,13 @@ def process(
     }
     # Store under both fingerprints so any future lookup — by quick fp or
     # by content fp after an mtime bump — retrieves the payload.
+    #
+    # CACHE SAFETY GUARANTEE: this write only runs after `provider.translate`
+    # has returned successfully. Any `check_cancel()` along the pipeline
+    # raises `JobCanceled` BEFORE this point, so a canceled job never leaves
+    # a partial or stale entry behind. Re-running the same item after a
+    # cancel always recomputes from scratch — there is no "fucked-up cached
+    # half-result" path. test_cancel_does_not_leave_cache_entry locks this in.
     cache_mod.store_two_level(media, payload, **key_kwargs)
 
     return ProcessResult(
@@ -337,10 +347,19 @@ def _build_context(
     req: ProcessRequest,
     fp: str,
     cues: list[stt.Cue],
+    *,
+    check_cancel: CancelCB = _noop_cancel,
 ) -> TranslationContext:
-    """Build the bible (cached) and, for cinematic, also extract per-cue frames."""
+    """Build the bible (cached) and, for cinematic, also extract per-cue frames.
+
+    Cancel checks are interleaved between scene-detection / frame-extraction /
+    LLM-bible-build / per-cue frame extraction so a cancel click during the
+    minutes-long bible build takes effect promptly. Critically, the bible is
+    only `store_cached_bible`-d AFTER `describe_scenes` returns successfully,
+    so a cancel mid-build leaves nothing on disk."""
     bible = scene_bible.load_cached_bible(fp)
     if bible is None:
+        check_cancel()
         scene_list = scenes.detect_scenes(
             req.media_path,
             threshold=settings.scene_detection_threshold,
@@ -354,6 +373,7 @@ def _build_context(
 
         keyframes: dict[int, bytes] = {}
         for scene in scene_list:
+            check_cancel()
             ts = scenes.keyframe_timestamp(scene, settings.scene_keyframe_position)
             try:
                 keyframes[scene.index] = frames.extract_frame_bytes(
@@ -362,7 +382,7 @@ def _build_context(
             except subprocess.CalledProcessError:
                 continue
 
-        scene_bible.describe_scenes(scene_list, keyframes)
+        scene_bible.describe_scenes(scene_list, keyframes, check_cancel=check_cancel)
         scene_bible.store_cached_bible(fp, scene_list)
         bible = scene_list
 
@@ -375,6 +395,7 @@ def _build_context(
     cue_frames: dict[int, bytes] = {}
     if req.mode == "cinematic":
         for cue in cues:
+            check_cancel()
             ts = (cue.start + cue.end) / 2.0
             try:
                 cue_frames[cue.id] = frames.extract_frame_bytes(

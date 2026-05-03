@@ -7,6 +7,7 @@ import hashlib
 import json
 from dataclasses import asdict
 from pathlib import Path
+from typing import Callable
 
 from app.config import settings
 from app.pipeline.llm import (
@@ -102,9 +103,21 @@ def store_cached_bible(media_fingerprint: str, scene_list: list[Scene]) -> None:
     )
 
 
-def describe_scenes(scene_list: list[Scene], keyframes: dict[int, bytes]) -> list[Scene]:
+def _noop_cancel() -> None: ...
+
+
+def describe_scenes(
+    scene_list: list[Scene],
+    keyframes: dict[int, bytes],
+    *,
+    check_cancel: Callable[[], None] = _noop_cancel,
+) -> list[Scene]:
     """Fill in Scene.description for each scene whose keyframe bytes are in
-    `keyframes` (mapping scene.index → JPEG bytes). Modifies in place."""
+    `keyframes` (mapping scene.index → JPEG bytes). Modifies in place.
+
+    Calls `check_cancel` between LLM batches so a cancel click during a long
+    bible build (5-15 min on a feature film) takes effect within one batch
+    instead of blocking until the whole bible is done."""
     try:
         client = get_vision_llm()
     except LLMError as e:
@@ -114,6 +127,7 @@ def describe_scenes(scene_list: list[Scene], keyframes: dict[int, bytes]) -> lis
     system = [SystemBlock(text=_DESCRIBE_PROMPT, cacheable=True)]
 
     for batch in batches(scene_list, settings.scene_bible_batch_size):
+        check_cancel()
         content = []
         for scene in batch:
             kf = keyframes.get(scene.index)
