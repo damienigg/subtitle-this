@@ -9,6 +9,21 @@
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <style>
     :root {
+      /* Compact, refined typography. Default Pico is 16px @ 1.65 line-height
+         which gives a roomy magazine feel — fine for blogs, too airy for a
+         dense control panel. Drop to ~14.5px @ 1.5 + tighter element
+         spacing so more fits in one viewport without feeling cramped. */
+      --pico-font-size: 14.5px;
+      --pico-line-height: 1.5;
+      --pico-spacing: 0.85rem;
+      --pico-form-element-spacing-vertical: 0.5rem;
+      --pico-form-element-spacing-horizontal: 0.7rem;
+      --pico-typography-spacing-vertical: 0.85rem;
+      --pico-block-spacing-vertical: 1rem;
+      --pico-block-spacing-horizontal: 1rem;
+      --pico-grid-spacing-vertical: 0.85rem;
+      --pico-grid-spacing-horizontal: 0.85rem;
+      /* Subtle accent palette for our status pills + hero cards. */
       --bt-ok-bg: #1f4f1f; --bt-ok-fg: #cfe9cf;
       --bt-warn-bg: #5a4a14; --bt-warn-fg: #fbe49b;
       --bt-err-bg: #5a1f1f; --bt-err-fg: #f5b3b3;
@@ -16,13 +31,34 @@
       --bt-active-bg: #2f4f7f; --bt-active-fg: #cfe2ff;
       --bt-muted-bg: #2a2a2a; --bt-muted-fg: #888;
     }
-    body { padding: 1rem 2rem; max-width: 1100px; margin: 0 auto; }
-    h1 { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; }
+    /* Wider canvas — dashboard cards and library tables benefit from the
+       extra horizontal real estate, especially for long Path columns. */
+    body { padding: 0.85rem 1.75rem 2rem; max-width: 1280px; margin: 0 auto; }
+    main { padding-top: 0.5rem; }
+    h1 { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.15rem; font-size: 1.5rem; }
     h1::before { content: "🎬"; font-size: 0.9em; }
-    nav ul { display: flex; gap: 0.5rem; padding: 0; list-style: none; margin-top: 0.5rem; }
-    nav a { padding: 0.4rem 0.9rem; border-radius: 0.4rem; text-decoration: none; transition: background 0.15s; }
+    h2 { font-size: 1.15rem; margin: 1.1rem 0 0.55rem; }
+    h3 { font-size: 1rem; }
+    hgroup p { font-size: 0.92em; color: var(--pico-muted-color); margin-bottom: 0; }
+    nav { margin-top: 0.4rem; }
+    nav ul { display: flex; gap: 0.4rem; padding: 0; list-style: none; margin: 0.35rem 0 0.6rem; }
+    nav a { padding: 0.32rem 0.8rem; border-radius: 0.35rem; font-size: 0.92em; text-decoration: none; transition: background 0.15s; }
     nav a:hover { background: var(--pico-card-background-color); }
     nav a.active { background: var(--pico-primary); color: var(--pico-primary-inverse); }
+
+    /* Section spacing — Pico's default <section> margin is generous for
+       articles; we tighten it for a dense settings/dashboard surface. */
+    section { margin-bottom: 1rem; }
+    section.settings-section { margin-bottom: 1.1rem; }
+
+    /* Form inputs — Pico's defaults are touch-friendly but oversized on
+       desktop. Trim the height a bit while keeping clickable hit area. */
+    input, select, textarea, button {
+      font-size: 0.95em;
+    }
+    label { font-size: 0.92em; }
+    .grid-fields > div { margin-bottom: 0.4rem; }
+    .grid-fields > div > label { font-size: 0.92em; margin-bottom: 0.2rem; }
 
     /* Status pills — consistent palette */
     .status-pill {
@@ -37,19 +73,37 @@
     .status-pill.running { background: var(--bt-active-bg); color: var(--bt-active-fg); }
     .status-pill.muted { background: var(--bt-muted-bg); color: var(--bt-muted-fg); }
 
-    /* Cards on dashboard */
-    .stat-card { padding: 0.85rem 1rem; }
-    .stat-card header { padding-bottom: 0.4rem; margin-bottom: 0.5rem; border-bottom: 1px solid var(--pico-card-border-color); font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.05em; color: var(--pico-muted-color); }
-    .stat-card .pill-row { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.4rem; }
-    .stat-card p { margin: 0.3rem 0 0; font-size: 0.95em; }
-    .stat-card code { font-size: 0.85em; }
+    /* Dashboard stat cards — compact, consistent height, balanced gutters.
+       The status grid uses an explicit auto-fit so 4 cards fit on a wide
+       viewport with comfortable spacing rather than stretching to absurd
+       widths. */
+    section > .grid {
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.65rem;
+    }
+    .stat-card { padding: 0.65rem 0.85rem; margin: 0; }
+    .stat-card header {
+      padding-bottom: 0.3rem; margin-bottom: 0.35rem;
+      border-bottom: 1px solid var(--pico-card-border-color);
+      font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em;
+      color: var(--pico-muted-color); font-weight: 600;
+    }
+    .stat-card .pill-row { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.3rem; }
+    .stat-card p { margin: 0.2rem 0 0; font-size: 0.88em; line-height: 1.4; }
+    .stat-card code { font-size: 0.82em; }
     .stat-card a { font-size: 0.85em; }
 
     /* Settings form */
-    .field-help { font-size: 0.82em; color: var(--pico-muted-color); margin-top: 0.25rem; line-height: 1.45; white-space: pre-line; }
-    .grid-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem 2rem; }
+    .field-help {
+      font-size: 0.78em; color: var(--pico-muted-color);
+      margin-top: 0.2rem; line-height: 1.4; white-space: pre-line;
+    }
+    .grid-fields {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem 1.5rem;
+    }
     @media (max-width: 700px) { .grid-fields { grid-template-columns: 1fr; } }
-    .grid-fields > div { margin-bottom: 0.5rem; }
     .grid-fields label { font-weight: 500; }
 
     /* Settings checkboxes — input + state span on one row, label as a
@@ -70,14 +124,15 @@
     /* Settings sections — left accent + slight background to group them */
     section.settings-section {
       border-left: 3px solid var(--pico-primary);
-      padding: 0.5rem 0 0.5rem 1.25rem;
-      margin-bottom: 1.5rem;
+      padding: 0.4rem 0 0.4rem 1.1rem;
+      margin-bottom: 1rem;
     }
     section.settings-section > header h3 {
-      margin: 0 0 0.25rem; font-size: 1.1em; color: var(--pico-primary);
+      margin: 0 0 0.2rem; font-size: 1em; color: var(--pico-primary);
+      font-weight: 600;
     }
     section.settings-section > header .section-help {
-      margin: 0 0 0.85rem; font-size: 0.85em;
+      margin: 0 0 0.7rem; font-size: 0.8em;
       color: var(--pico-muted-color); font-style: italic;
       line-height: 1.45; max-width: 70ch;
     }
@@ -87,17 +142,18 @@
       background: linear-gradient(135deg, var(--bt-info-bg), var(--bt-active-bg));
       color: var(--bt-info-fg);
       border: none;
-      padding: 1rem 1.25rem;
-      border-radius: 0.5rem;
-      margin-bottom: 1.75rem;
+      padding: 0.8rem 1.05rem;
+      border-radius: 0.45rem;
+      margin-bottom: 1.2rem;
+      font-size: 0.92em;
     }
-    .hero-cost-ladder header { margin-bottom: 0.5rem; padding: 0; border: none; background: none; }
-    .hero-cost-ladder header strong { font-size: 1.05em; color: var(--bt-active-fg); }
-    .hero-cost-ladder p { margin: 0.4rem 0; }
-    .hero-cost-ladder ol { margin: 0.5rem 0 0.6rem; padding-left: 1.5rem; }
-    .hero-cost-ladder li { margin-bottom: 0.2rem; line-height: 1.5; }
+    .hero-cost-ladder header { margin-bottom: 0.4rem; padding: 0; border: none; background: none; }
+    .hero-cost-ladder header strong { font-size: 1em; color: var(--bt-active-fg); }
+    .hero-cost-ladder p { margin: 0.3rem 0; }
+    .hero-cost-ladder ol { margin: 0.4rem 0 0.5rem; padding-left: 1.3rem; }
+    .hero-cost-ladder li { margin-bottom: 0.15rem; line-height: 1.45; }
     .hero-cost-ladder em { color: var(--bt-active-fg); font-style: normal; }
-    .hero-cost-ladder small { color: var(--bt-info-fg); opacity: 0.85; }
+    .hero-cost-ladder small { color: var(--bt-info-fg); opacity: 0.85; font-size: 0.88em; }
 
     /* Hidden state for conditional fields */
     .field-hidden { display: none; }
@@ -155,15 +211,22 @@
     .batch-action-bar {
       position: sticky; top: 0; z-index: 10;
       background: var(--pico-background-color);
-      padding: 0.55rem 0.75rem; margin-bottom: 0.5rem;
+      padding: 0.45rem 0.65rem; margin-bottom: 0.4rem;
       border: 1px solid var(--pico-card-border-color);
-      border-radius: 0.4rem;
-      display: flex; gap: 0.55rem; align-items: center; flex-wrap: wrap;
+      border-radius: 0.35rem;
+      display: flex; gap: 0.45rem; align-items: center; flex-wrap: wrap;
+      font-size: 0.92em;
     }
-    .batch-action-bar button { padding: 0.3rem 0.75rem; font-size: 0.88em; margin: 0; }
+    .batch-action-bar button { padding: 0.25rem 0.65rem; font-size: 0.88em; margin: 0; }
     .batch-action-bar button:disabled { opacity: 0.4; cursor: not-allowed; }
     .batch-action-bar #selected-count { font-weight: 600; color: var(--pico-primary); }
     .batch-action-bar .batch-result { margin-left: auto; }
+
+    /* Tables — tighter rows + smaller font for the data-dense Library and
+       Recent jobs views. */
+    table { font-size: 0.92em; margin-bottom: 0.6rem; }
+    table th, table td { padding: 0.4rem 0.6rem; }
+    table th { font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.03em; color: var(--pico-muted-color); font-weight: 600; }
 
     /* HTMX request indicator */
     .htmx-indicator { opacity: 0; transition: opacity 0.2s; }
