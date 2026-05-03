@@ -35,8 +35,9 @@
   </article>
 
   <form method="post" action="/settings">
-    {% for section, section_desc, fields in sections %}
-    <section class="settings-section">
+    {% for section, section_desc, section_show_if, fields in sections %}
+    <section class="settings-section"
+      {% if section_show_if %}data-show-if-field="{{ section_show_if.field }}" data-show-if-equals="{{ section_show_if.equals_csv }}"{% endif %}>
       <header>
         <h3>{{ section }}</h3>
         {% if section_desc %}<p class="section-help">{{ section_desc }}</p>{% endif %}
@@ -48,14 +49,14 @@
           {% set is_sensitive = k in sensitive %}
           {% set is_readonly = k in read_only %}
           {# show_if: data-show-if-field/-equals lets the JS at the bottom
-             of the page conditionally hide fields whose dependent value
-             isn't met (e.g. nllb_model only when provider=nllb). The
-             check runs on initial paint AND on change of any monitored
-             field, so toggling the dependent dropdown re-evaluates. #}
+             of the page conditionally hide fields (or whole sections)
+             whose dependent value isn't met. equals can be a single
+             value or a comma-separated list (any-of). The check runs
+             on initial paint AND on change of any monitored field. #}
           {% set show_if = f.show_if %}
           {% if f.type == 'checkbox' %}
             <div id="field-{{ k }}" class="field-checkbox"
-                 {% if show_if %}data-show-if-field="{{ show_if.field }}" data-show-if-equals="{{ show_if.equals }}"{% endif %}>
+                 {% if show_if %}data-show-if-field="{{ show_if.field }}" data-show-if-equals="{{ show_if.equals_csv }}"{% endif %}>
               <span class="field-label">{{ f.label }}</span>
               <label class="checkbox-row">
                 <input type="checkbox" id="{{ k }}" name="{{ k }}" {% if v %}checked{% endif %} {% if is_readonly %}disabled{% endif %}>
@@ -65,7 +66,7 @@
             </div>
           {% else %}
             <div id="field-{{ k }}"
-                 {% if show_if %}data-show-if-field="{{ show_if.field }}" data-show-if-equals="{{ show_if.equals }}"{% endif %}>
+                 {% if show_if %}data-show-if-field="{{ show_if.field }}" data-show-if-equals="{{ show_if.equals_csv }}"{% endif %}>
               <label for="{{ k }}">{{ f.label }}</label>
               {% if f.type == 'select' %}
                 <select id="{{ k }}" name="{{ k }}" {% if is_readonly %}disabled{% endif %}>
@@ -125,19 +126,22 @@
     }
   }
 
-  // ── Generic show_if: hide fields whose data-show-if-field doesn't match ──
-  // Fields rendered with `show_if` in _FIELD_META carry data attributes that
-  // tell us which other field's value they depend on. We re-evaluate every
-  // such field on initial paint and whenever ANY field changes value.
+  // ── Generic show_if: hide fields/sections whose dependency isn't met ──
+  // Both individual fields AND whole sections carry `data-show-if-field` +
+  // `data-show-if-equals` attributes. The equals attr is a comma-separated
+  // list of values (single value also works) — visible when the watched
+  // field's current value is in the list. Re-evaluated on every form
+  // change so toggling provider/mode instantly hides irrelevant sections.
   function applyShowIfRules() {
-    document.querySelectorAll('[data-show-if-field]').forEach(field => {
-      const watchedKey = field.dataset.showIfField;
-      const wantedValue = field.dataset.showIfEquals;
+    document.querySelectorAll('[data-show-if-field]').forEach(elem => {
+      const watchedKey = elem.dataset.showIfField;
+      const wantedValues = elem.dataset.showIfEquals.split(',');
       const watched = document.getElementById(watchedKey);
       if (!watched) return;
-      const currentValue = watched.type === 'checkbox' ? (watched.checked ? 'true' : 'false')
-                                                       : watched.value;
-      field.style.display = (currentValue === wantedValue) ? '' : 'none';
+      const currentValue = watched.type === 'checkbox'
+        ? (watched.checked ? 'true' : 'false')
+        : watched.value;
+      elem.style.display = wantedValues.includes(currentValue) ? '' : 'none';
     });
   }
 

@@ -67,29 +67,55 @@ _SECTION_META: dict[str, str] = {
         "× disk space, NOT money."
     ),
     "Translation": (
-        "Provider-agnostic translation knobs. Most users leave these at defaults."
+        "Provider-specific translation knobs."
     ),
     "Translation model": (
-        "Only used when Translation provider = LLM. Skip this section entirely "
-        "if you stay on NLLB or DeepL. Configure cloud (Anthropic / OpenAI / "
-        "OpenRouter / …) or fully local (Ollama / LM Studio / LocalAI / vLLM) "
-        "— Subtitle This doesn't care which."
+        "The LLM that translates subtitle cues. Configure cloud (Anthropic / "
+        "OpenAI / OpenRouter / …) or fully local (Ollama / LM Studio / LocalAI / "
+        "vLLM) — Subtitle This doesn't care which."
     ),
     "Vision model": (
-        "Only used by scene and cinematic modes (the LLM that describes "
-        "keyframes for the scene bible). Skip this section entirely if you "
-        "stay on audio mode."
+        "The LLM that describes keyframes for the scene bible used by scene "
+        "and cinematic modes."
     ),
     "Scene & Cinematic": (
-        "Tuning knobs for the multimodal modes. NO EFFECT when mode = audio. "
-        "Most users can leave these at defaults."
+        "Tuning knobs for scene-detection and cinematic-frame extraction."
     ),
     "Subtitles": (
         "WebVTT line-wrap formatting."
     ),
     "API keys": (
-        "Cloud provider keys. Leave everything blank for fully-local setups."
+        "Cloud provider keys."
     ),
+}
+
+
+# Section-level conditional visibility. Same `field/equals` shape as the
+# field-level show_if; equals can be a single string or a list (matched as
+# "current value is in the list"). The general rule: if a whole section's
+# fields aren't going to be used given the current Defaults config, hide
+# the section entirely. Simpler interface, less to read for new users.
+_SECTION_SHOW_IF: dict[str, dict] = {
+    # Translation (NLLB model variant + LLM batch size) is irrelevant when
+    # the user picked DeepL — DeepL has neither a model choice nor a batch
+    # knob exposed to us.
+    "Translation": {"field": "default_translation_provider",
+                    "equals": ["nllb", "llm"]},
+    # The Translation model section is the per-cue-translation LLM config.
+    # Only meaningful when provider=llm (NLLB and DeepL ignore it entirely).
+    "Translation model": {"field": "default_translation_provider",
+                          "equals": "llm"},
+    # The Vision model section drives the scene bible builder. Only invoked
+    # by scene/cinematic modes — hide it when the user is on audio mode.
+    "Vision model": {"field": "default_mode",
+                     "equals": ["scene", "cinematic"]},
+    # Scene-detection tuning knobs do nothing in audio mode.
+    "Scene & Cinematic": {"field": "default_mode",
+                          "equals": ["scene", "cinematic"]},
+    # API keys section currently only carries the DeepL key; if the user
+    # isn't on DeepL there's nothing to enter here.
+    "API keys": {"field": "default_translation_provider",
+                 "equals": "deepl"},
 }
 
 
@@ -415,17 +441,42 @@ _FIELD_META: list[dict[str, Any]] = [
 ]
 
 
-def _section_groups() -> list[tuple[str, str, list[dict]]]:
-    """Group fields by section. Returns (name, description, fields) tuples in
-    display order."""
+def _section_groups() -> list[tuple[str, str, dict | None, list[dict]]]:
+    """Group fields by section. Returns (name, description, show_if_or_None,
+    fields) tuples in display order. `show_if`, when present, is a normalized
+    dict {field, equals_csv} ready for template data attributes."""
     seen: list[str] = []
     for f in _FIELD_META:
         if f["section"] not in seen:
             seen.append(f["section"])
-    return [
-        (s, _SECTION_META.get(s, ""), [f for f in _FIELD_META if f["section"] == s])
-        for s in seen
-    ]
+    out: list[tuple[str, str, dict | None, list[dict]]] = []
+    for s in seen:
+        rule = _SECTION_SHOW_IF.get(s)
+        normalized = _normalize_show_if(rule) if rule else None
+        out.append((
+            s,
+            _SECTION_META.get(s, ""),
+            normalized,
+            [f for f in _FIELD_META if f["section"] == s],
+        ))
+    return out
+
+
+def _normalize_show_if(rule: dict) -> dict:
+    """Normalize a show_if rule to {field, equals_csv} so template + JS see
+    a uniform shape. `equals` accepts either a string (single value) or a
+    list (any-of). Returns equals_csv as a comma-joined string."""
+    eq = rule.get("equals")
+    values = eq if isinstance(eq, list) else [eq]
+    return {"field": rule["field"], "equals_csv": ",".join(str(v) for v in values)}
+
+
+# Normalize every field-level show_if at module load so the template doesn't
+# need to handle string-vs-list. Sections are normalized inline in
+# _section_groups since their rules live in _SECTION_SHOW_IF.
+for _f in _FIELD_META:
+    if "show_if" in _f and "equals_csv" not in _f["show_if"]:
+        _f["show_if"] = _normalize_show_if(_f["show_if"])
 
 
 def _coerce(key: str, raw: str) -> Any:
