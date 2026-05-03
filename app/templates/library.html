@@ -58,43 +58,62 @@
   {% if not items %}
     <p><em>No items match.</em></p>
   {% else %}
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>{{ target_lang }} sub?</th>
-          <th>Path</th>
-          <th></th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for item in items %}
-        <tr>
-          <td>{{ item.name }}</td>
-          <td>{{ item.type }}</td>
-          <td>
-            {% if item.has_target_subtitle %}
-              <span class="status-pill ok">yes</span>
-            {% else %}
-              <span class="status-pill warn">missing</span>
-            {% endif %}
-          </td>
-          <td><code class="path">{{ item.path }}</code></td>
-          <td>
-            <button class="secondary subtitle-btn"
-                    hx-post="/api/process/{{ item.id }}?target_lang={{ target_lang }}&mode={{ mode }}"
-                    hx-swap="none"
-                    hx-on::after-request="showJobResult('row-result-{{ item.id }}', event.detail.xhr, event.detail.successful)">
-              Subtitle this
-            </button>
-          </td>
-          <td><span id="row-result-{{ item.id }}"></span></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <form id="batch-form"
+          hx-post="/api/batch"
+          hx-swap="none"
+          hx-on::after-request="onBatchResult(event)">
+      <input type="hidden" name="target_lang" value="{{ target_lang }}">
+      <input type="hidden" name="mode" value="{{ mode }}">
+
+      <div class="batch-action-bar">
+        <strong>Batch:</strong>
+        <span><span id="selected-count">0</span> selected</span>
+        <button type="button" class="secondary outline" id="select-all-btn">Select all visible</button>
+        <button type="button" class="secondary outline" id="clear-selection-btn">Clear</button>
+        <button type="submit" id="batch-submit-btn" disabled>Subtitle selected</button>
+        <span id="batch-result" class="batch-result"></span>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 2rem;"><input type="checkbox" id="select-all-cb" aria-label="Select all visible"></th>
+            <th>Name</th>
+            <th>Type</th>
+            <th>{{ target_lang }} sub?</th>
+            <th>Path</th>
+            <th></th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in items %}
+          <tr>
+            <td><input type="checkbox" name="item_id" value="{{ item.id }}" class="item-cb" aria-label="Select {{ item.name }}"></td>
+            <td>{{ item.name }}</td>
+            <td>{{ item.type }}</td>
+            <td>
+              {% if item.has_target_subtitle %}
+                <span class="status-pill ok">yes</span>
+              {% else %}
+                <span class="status-pill warn">missing</span>
+              {% endif %}
+            </td>
+            <td><code class="path">{{ item.path }}</code></td>
+            <td>
+              <button type="button" class="secondary subtitle-btn"
+                      hx-post="/api/process/{{ item.id }}?target_lang={{ target_lang }}&mode={{ mode }}"
+                      hx-swap="none"
+                      hx-on::after-request="showJobResult('row-result-{{ item.id }}', event.detail.xhr, event.detail.successful)">
+                Subtitle this
+              </button>
+            </td>
+            <td><span id="row-result-{{ item.id }}"></span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </form>
 
     {% set base_qs = "?q=" ~ q ~ "&target_lang=" ~ target_lang ~ "&mode=" ~ mode ~ "&missing_only=" ~ ('1' if missing_only else '0') ~ "&limit=" ~ limit %}
     <div style="margin-top: 1rem; display: flex; gap: 1rem; align-items: center;">
@@ -112,6 +131,60 @@
         <span style="color: var(--pico-muted-color);">Next →</span>
       {% endif %}
     </div>
+
+    <script>
+      // ── Batch selection: checkbox count + select-all + post-submit handler ──
+      (function () {
+        const itemCbs = document.querySelectorAll('input.item-cb');
+        if (!itemCbs.length) return;
+        const countEl = document.getElementById('selected-count');
+        const submitBtn = document.getElementById('batch-submit-btn');
+        const headerCb = document.getElementById('select-all-cb');
+        const resultEl = document.getElementById('batch-result');
+
+        function updateCount() {
+          const n = Array.from(itemCbs).filter(c => c.checked).length;
+          countEl.textContent = n;
+          submitBtn.disabled = n === 0;
+          headerCb.checked = n > 0 && n === itemCbs.length;
+          headerCb.indeterminate = n > 0 && n < itemCbs.length;
+        }
+
+        itemCbs.forEach(c => c.addEventListener('change', updateCount));
+        headerCb.addEventListener('change', () => {
+          itemCbs.forEach(c => c.checked = headerCb.checked);
+          updateCount();
+        });
+        document.getElementById('select-all-btn').addEventListener('click', () => {
+          itemCbs.forEach(c => c.checked = true);
+          updateCount();
+        });
+        document.getElementById('clear-selection-btn').addEventListener('click', () => {
+          itemCbs.forEach(c => c.checked = false);
+          resultEl.innerHTML = '';
+          updateCount();
+        });
+
+        window.onBatchResult = function (event) {
+          const ok = event.detail.successful;
+          if (ok) {
+            try {
+              const r = JSON.parse(event.detail.xhr.responseText);
+              resultEl.innerHTML = '<span class="status-pill ok">queued ' + r.submitted +
+                ' · skipped ' + r.skipped + '</span>';
+              itemCbs.forEach(c => c.checked = false);
+              updateCount();
+            } catch (e) {
+              resultEl.innerHTML = '<span class="status-pill ok">queued</span>';
+            }
+          } else {
+            const detail = (event.detail.xhr.responseText || '').slice(0, 120);
+            resultEl.innerHTML = '<span class="status-pill err">HTTP ' +
+              event.detail.xhr.status + ' · ' + detail + '</span>';
+          }
+        };
+      })();
+    </script>
   {% endif %}
 
   {% endif %}

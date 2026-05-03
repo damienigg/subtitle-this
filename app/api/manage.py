@@ -2,7 +2,7 @@
 pipeline, writes .vtt next to media, refreshes Emby metadata."""
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Form, HTTPException
 from pydantic import BaseModel
 
 from app import jobs
@@ -202,6 +202,50 @@ def process_item(
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     return JobView(**job.to_dict())
+
+
+@router.post("/batch", response_model=SweepResult)
+def process_batch(
+    item_id: list[str] = Form([]),
+    target_lang: str | None = Form(None),
+    mode: str | None = Form(None),
+    translation_provider: str | None = Form(None),
+) -> SweepResult:
+    """Queue translation jobs for a user-selected batch of Emby items.
+
+    Backs the multi-select action on the Library page: user ticks N rows,
+    clicks "Subtitle selected", we receive the list of item ids as repeated
+    `item_id` form fields. Every selected item is queued unconditionally —
+    we don't skip items that already have a subtitle, because the user may
+    be deliberately re-running with new Settings. Items whose Emby lookup
+    fails or which fail mode/provider validation are tallied in `skipped`
+    so the UI can surface that count.
+    """
+    if not item_id:
+        raise HTTPException(400, "no item ids provided")
+
+    emby = emby_client()
+    submitted: list[str] = []
+    skipped = 0
+    for iid in item_id:
+        try:
+            item = emby.get_item(iid)
+        except EmbyError:
+            skipped += 1
+            continue
+        try:
+            job = submit_item_job(
+                emby=emby,
+                item=item,
+                target_lang=target_lang,
+                mode=mode,
+                translation_provider=translation_provider,
+            )
+            submitted.append(job.id)
+        except ValueError:
+            skipped += 1
+
+    return SweepResult(submitted=len(submitted), skipped=skipped, job_ids=submitted)
 
 
 @router.post("/sweep", response_model=SweepResult)

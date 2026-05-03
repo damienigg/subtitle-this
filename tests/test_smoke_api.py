@@ -110,6 +110,20 @@ def test_sweep_endpoint_412_when_emby_unconfigured(client, monkeypatch):
     assert r.status_code == 412
 
 
+def test_batch_endpoint_400_when_no_items_selected(client):
+    """Empty batch is a user error (button is disabled in the UI when 0
+    selected, but the endpoint defends itself too)."""
+    r = client.post("/api/batch", data={})
+    assert r.status_code == 400
+
+
+def test_batch_endpoint_412_when_emby_unconfigured(client, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "emby_url": "", "emby_api_key": ""})
+    r = client.post("/api/batch", data={"item_id": ["a", "b"]})
+    assert r.status_code == 412
+
+
 def test_webhook_endpoint_does_not_exist(client):
     """Webhook receiver was removed — subtitle creation is exclusively a manual
     UI action. POSTs to the old endpoint must 404 (not 405 / not 401)."""
