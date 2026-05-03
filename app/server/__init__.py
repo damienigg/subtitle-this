@@ -4,6 +4,7 @@ template."""
 from app.config import settings
 from app.server.base import (
     MediaItem,
+    MediaLibrary,
     MediaPage,
     MediaServerClient,
     MediaServerError,
@@ -41,7 +42,7 @@ def media_server_client() -> MediaServerClient:
 
 
 __all__ = [
-    "MediaItem", "MediaPage", "MediaStream",
+    "MediaItem", "MediaLibrary", "MediaPage", "MediaStream",
     "MediaServerClient", "MediaServerError",
     "media_server_client",
 ]

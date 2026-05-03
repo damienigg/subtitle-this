@@ -40,6 +40,7 @@ import httpx
 
 from app.server.base import (
     MediaItem,
+    MediaLibrary,
     MediaPage,
     MediaServerClient,
     MediaServerError,
@@ -115,12 +116,38 @@ class PlexClient(MediaServerClient):
             raise MediaServerError(f"Plex item {item_id!r} not found")
         return _item_from_metadata(items[0])
 
+    def list_libraries(self) -> list[MediaLibrary]:
+        """Surface the video-bearing sections (movie + show) for the Library
+        page filter. Music ('artist') and photo sections are skipped — a
+        subtitle tool has no business listing them."""
+        r = self._http.get(f"{self._base}/library/sections")
+        if r.status_code != 200:
+            raise MediaServerError(
+                f"GET /library/sections → HTTP {r.status_code}: {r.text[:200]}"
+            )
+        directories = (r.json().get("MediaContainer") or {}).get("Directory") or []
+        out: list[MediaLibrary] = []
+        for d in directories:
+            section_type = (d.get("type") or "").lower()
+            if section_type not in _SECTION_TO_VIDEO_TYPE:
+                continue
+            # Map Plex's section types to the same labels Emby uses so the
+            # frontend doesn't need backend-specific branches.
+            ct = "movies" if section_type == "movie" else "tvshows"
+            out.append(MediaLibrary(
+                id=str(d.get("key") or ""),
+                name=d.get("title") or "",
+                type=ct,
+            ))
+        return out
+
     def list_videos(
         self,
         *,
         start_index: int = 0,
         limit: int = 200,
         search_term: str | None = None,
+        library_id: str | None = None,
     ) -> MediaPage:
         """Aggregate one page across all video sections. Plex has no unified
         recursive query, so we issue one call per (section, content-type)
@@ -128,7 +155,29 @@ class PlexClient(MediaServerClient):
         type=4 (episodes — the leaf items with actual video files, NOT
         the show folders). Search-by-title is the fast path; the
         unfiltered listing pulls everything per section so later pages
-        don't require expensive offsets."""
+        don't require expensive offsets.
+
+        When library_id is set, scope to just that section."""
+        if library_id:
+            # User picked a specific section. Find its content type by looking
+            # it up in the cached video-sections list; if it's not video-
+            # bearing (music/photo) we have nothing to return.
+            type_code = next(
+                (t for k, t in self._video_sections() if k == library_id),
+                None,
+            )
+            if type_code is None:
+                return MediaPage(items=[], total=0)
+            page = self._section_page(
+                library_id,
+                type_code=type_code,
+                start_index=0,
+                limit=10_000,
+                search_term=search_term,
+            )
+            sliced = page.items[start_index : start_index + limit]
+            return MediaPage(items=sliced, total=page.total)
+
         all_items: list[MediaItem] = []
         total = 0
         for section_key, type_code in self._video_sections():

@@ -18,6 +18,7 @@ from app.processor import (
 )
 from app.server import (
     MediaItem,
+    MediaLibrary,
     MediaServerClient,
     MediaServerError,
     media_server_client as _build_media_server_client,
@@ -49,6 +50,12 @@ class ItemSummary(BaseModel):
     path: str
     type: str
     has_target_subtitle: bool
+
+
+class LibrarySummary(BaseModel):
+    id: str
+    name: str
+    type: str
 
 
 class JobView(BaseModel):
@@ -184,17 +191,30 @@ def server_health() -> dict:
     return {"configured": True, "reachable": reachable, "type": settings.media_server_type}
 
 
+@router.get("/server/libraries", response_model=list[LibrarySummary])
+def list_libraries() -> list[LibrarySummary]:
+    """The configured media server's top-level video libraries. Used by the
+    Library page to populate its library-filter dropdown."""
+    try:
+        libs = media_server_client().list_libraries()
+    except MediaServerError as e:
+        raise HTTPException(502, f"Media server libraries lookup failed: {e}") from e
+    return [LibrarySummary(id=l.id, name=l.name, type=l.type) for l in libs]
+
+
 @router.get("/server/items", response_model=list[ItemSummary])
 def list_items(
     target_lang: str | None = None,
     limit: int = 200,
     start_index: int = 0,
     q: str | None = None,
+    library_id: str | None = None,
 ) -> list[ItemSummary]:
     target = target_lang or settings.default_target_lang
     try:
         page = media_server_client().list_videos(
             start_index=start_index, limit=limit, search_term=q,
+            library_id=library_id,
         )
     except MediaServerError as e:
         raise HTTPException(502, f"Media server request failed: {e}") from e

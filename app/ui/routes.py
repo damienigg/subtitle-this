@@ -525,6 +525,7 @@ def library(
     missing_only: int = 0,
     start_index: int = 0,
     limit: int = 50,
+    library_id: str | None = None,
 ) -> HTMLResponse:
     """Browse media-server items, filter, and queue per-item subtitling jobs."""
     if not settings.media_server_url or not settings.media_server_api_key:
@@ -541,6 +542,8 @@ def library(
                 "start_index": 0, "limit": limit,
                 "modes": list(SUPPORTED_MODES),
                 "language_options": LANGUAGE_OPTIONS,
+                "libraries": [],
+                "library_id": library_id or "",
                 "error": None,
             },
         )
@@ -551,19 +554,34 @@ def library(
     error = None
     items: list[dict] = []
     total = 0
+    libraries: list[dict] = []
+    client = media_server_client()
+    # Library list and item list go through the same MediaServerError branch
+    # — if the server flakes, the page should still render the filter form
+    # (it just won't have a library dropdown populated until next refresh).
     try:
-        page = media_server_client().list_videos(start_index=start_index, limit=limit, search_term=q or None)
-        for it in page.items:
-            has_sub = it.has_subtitle_track(target_lang)
-            if missing_only and has_sub:
-                continue
-            items.append({
-                "id": it.id, "name": it.name, "type": it.type,
-                "path": it.path, "has_target_subtitle": has_sub,
-            })
-        total = page.total
+        libs = client.list_libraries()
+        libraries = [{"id": l.id, "name": l.name, "type": l.type} for l in libs]
     except (MediaServerError, HTTPException) as e:
         error = str(e)
+
+    if error is None:
+        try:
+            page = client.list_videos(
+                start_index=start_index, limit=limit, search_term=q or None,
+                library_id=library_id or None,
+            )
+            for it in page.items:
+                has_sub = it.has_subtitle_track(target_lang)
+                if missing_only and has_sub:
+                    continue
+                items.append({
+                    "id": it.id, "name": it.name, "type": it.type,
+                    "path": it.path, "has_target_subtitle": has_sub,
+                })
+            total = page.total
+        except (MediaServerError, HTTPException) as e:
+            error = str(e)
 
     return templates.TemplateResponse(
         request, "library.html",
@@ -580,6 +598,8 @@ def library(
             "limit": limit,
             "modes": list(SUPPORTED_MODES),
             "language_options": LANGUAGE_OPTIONS,
+            "libraries": libraries,
+            "library_id": library_id or "",
             "error": error,
         },
     )

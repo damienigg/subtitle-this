@@ -226,6 +226,40 @@ def test_list_videos_passes_pagination_and_search():
     assert seen["params"]["IncludeItemTypes"] == "Movie,Episode"
 
 
+def test_list_videos_scopes_to_library_via_parent_id():
+    """Picking a library in the dropdown must thread its id through to Emby
+    as ?ParentId=<id>, scoping the recursive listing to that one library."""
+    seen = {}
+
+    def handler(req):
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(200, json={"Items": [], "TotalRecordCount": 0})
+    c = _client_with_mock(handler)
+    c.list_videos(library_id="film-folder-id")
+    assert seen["params"]["ParentId"] == "film-folder-id"
+    assert seen["params"]["Recursive"] == "true"
+
+
+def test_list_libraries_filters_to_video_kinds():
+    """list_libraries() should surface video-bearing libraries (movies / tvshows
+    / mixed / homevideos) and skip music, photos, etc. — a subtitling tool has
+    no business listing them."""
+    def handler(req):
+        assert req.url.path == "/Library/MediaFolders"
+        return httpx.Response(200, json={"Items": [
+            {"Id": "1", "Name": "Films", "CollectionType": "movies"},
+            {"Id": "2", "Name": "Series", "CollectionType": "tvshows"},
+            {"Id": "3", "Name": "Music", "CollectionType": "music"},
+            {"Id": "4", "Name": "Photos", "CollectionType": "photos"},
+            {"Id": "5", "Name": "Mixed bag", "CollectionType": ""},
+        ]})
+    c = _client_with_mock(handler)
+    libs = c.list_libraries()
+    names = {l.name for l in libs}
+    # Music + Photos must not appear; the mixed-content library does.
+    assert names == {"Films", "Series", "Mixed bag"}
+
+
 def test_refresh_item_uses_post():
     """Emby's metadata refresh trigger is POST /Items/{id}/Refresh —
     distinct from Plex's PUT shape. Asymmetry between the two clients

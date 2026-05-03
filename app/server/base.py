@@ -65,6 +65,17 @@ class MediaPage:
     total: int
 
 
+@dataclass
+class MediaLibrary:
+    """A top-level library/collection on the media server (e.g. "Movies",
+    "TV Shows"). Used for the Library page filter — users with both a films
+    library and a series library on the same Emby/Jellyfin/Plex server can
+    scope the browser to just one."""
+    id: str
+    name: str
+    type: str   # "movies" | "tvshows" | "mixed" | "" (server-reported, lowercased)
+
+
 class MediaServerClient(ABC):
     """Protocol that every media-server backend implements. Stays minimal —
     just the surface the subtitling pipeline actually needs."""
@@ -79,14 +90,21 @@ class MediaServerClient(ABC):
         MediaServerError on HTTP / auth failures."""
 
     @abstractmethod
+    def list_libraries(self) -> list[MediaLibrary]:
+        """The user-facing top-level libraries on this server. Used to
+        populate the Library page's library filter dropdown."""
+
+    @abstractmethod
     def list_videos(
         self,
         *,
         start_index: int = 0,
         limit: int = 200,
         search_term: str | None = None,
+        library_id: str | None = None,
     ) -> MediaPage:
-        """One page of video items + the server's total-count report."""
+        """One page of video items + the server's total-count report.
+        When library_id is set, the listing is scoped to just that library."""
 
     @abstractmethod
     def refresh_item(self, item_id: str) -> None:

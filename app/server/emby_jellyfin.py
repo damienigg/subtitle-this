@@ -11,6 +11,7 @@ import httpx
 
 from app.server.base import (
     MediaItem,
+    MediaLibrary,
     MediaPage,
     MediaServerClient,
     MediaServerError,
@@ -56,12 +57,38 @@ class EmbyJellyfinClient(MediaServerClient):
             raise MediaServerError(f"item {item_id!r} not found in library")
         return _item_from_payload(items[0])
 
+    def list_libraries(self) -> list[MediaLibrary]:
+        # `/Library/MediaFolders` returns the top-level user-facing libraries.
+        # Each entry has Id, Name, and CollectionType ("movies" / "tvshows" /
+        # "music" / "homevideos" / etc.). We filter to video-bearing kinds
+        # (movies / tvshows / mixed / homevideos) so users don't see Music in
+        # the library dropdown of a *subtitle* tool. Empty CollectionType
+        # ("mixed" content) is allowed through — Emby uses it for folders the
+        # user explicitly didn't classify, which still typically hold videos.
+        r = self._http.get(f"{self._base}/Library/MediaFolders")
+        if r.status_code != 200:
+            raise MediaServerError(
+                f"GET /Library/MediaFolders → HTTP {r.status_code}: {r.text[:200]}"
+            )
+        out: list[MediaLibrary] = []
+        for it in (r.json().get("Items") or []):
+            ct = (it.get("CollectionType") or "").lower()
+            if ct and ct not in ("movies", "tvshows", "homevideos", "mixed"):
+                continue
+            out.append(MediaLibrary(
+                id=str(it.get("Id") or ""),
+                name=it.get("Name") or "",
+                type=ct,
+            ))
+        return out
+
     def list_videos(
         self,
         *,
         start_index: int = 0,
         limit: int = 200,
         search_term: str | None = None,
+        library_id: str | None = None,
     ) -> MediaPage:
         params: dict = {
             "Recursive": "true",
@@ -72,6 +99,11 @@ class EmbyJellyfinClient(MediaServerClient):
         }
         if search_term:
             params["SearchTerm"] = search_term
+        if library_id:
+            # ParentId scopes the recursive query to one top-level library.
+            # Combined with Recursive=true this descends through seasons/folders
+            # so episodes still surface as flat list entries.
+            params["ParentId"] = library_id
         r = self._http.get(f"{self._base}/Items", params=params)
         if r.status_code != 200:
             raise MediaServerError(
