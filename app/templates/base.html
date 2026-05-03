@@ -228,8 +228,8 @@
     .library-table th.col-type,     .library-table td.col-type     { width: 5rem; }
     .library-table th.col-sub,      .library-table td.col-sub      { width: 6rem; text-align: center; }
     .library-table th.col-path,     .library-table td.col-path     { width: 28%; }
-    .library-table th.col-action,   .library-table td.col-action   { width: 8rem; }
-    .library-table th.col-result,   .library-table td.col-result   { width: 14rem; }
+    .library-table th.col-action,   .library-table td.col-action   { width: 12rem; }
+    .library-table th.col-result,   .library-table td.col-result   { width: 10rem; }
 
     /* Path cells: monospace + ellipsis, full text on hover via title attr. */
     .library-table .col-path code {
@@ -260,11 +260,15 @@
     /* Per-row action buttons (Subtitle now + Batch) — laid out horizontally
        in the col-action cell. Both buttons use the secondary style; the
        outline modifier on "+ Batch" makes the primary action ("Subtitle
-       now") stand out. */
+       now") stand out. flex-wrap is INTENTIONALLY off — the column is sized
+       wide enough that both buttons sit on the same line, which keeps the
+       row height tight and the table compact. */
     .row-actions {
-      display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;
+      display: flex; gap: 0.3rem; align-items: center; flex-wrap: nowrap;
     }
-    .row-actions button { padding: 0.25rem 0.6rem; font-size: 0.85em; margin: 0; white-space: nowrap; }
+    .row-actions button {
+      padding: 0.2rem 0.5rem; font-size: 0.8em; margin: 0; white-space: nowrap;
+    }
 
     /* Batch staging panel — sticky at the bottom of the viewport, only
        visible (via `hidden` attr) when the batch is non-empty. Compact
