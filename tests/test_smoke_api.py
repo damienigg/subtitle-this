@@ -115,18 +115,16 @@ def test_sweep_endpoint_does_not_exist(client):
     assert r2.status_code == 404
 
 
-def test_batch_endpoint_400_when_no_items_selected(client):
-    """Empty batch is a user error (button is disabled in the UI when 0
-    selected, but the endpoint defends itself too)."""
+def test_batch_endpoint_does_not_exist(client):
+    """The /api/batch endpoint was removed when we redesigned the batch UX
+    around per-item parameters. The Library page now iterates and POSTs to
+    /api/process/{id} once per batched item from JS, with each item's
+    individually-edited target_lang and mode in the query string. Older
+    clients hitting /api/batch must 404."""
     r = client.post("/api/batch", data={})
-    assert r.status_code == 400
-
-
-def test_batch_endpoint_412_when_server_unconfigured(client, monkeypatch):
-    from app.config import settings
-    monkeypatch.setattr(settings, "_overrides", {**settings._overrides, "media_server_url": "", "media_server_api_key": ""})
-    r = client.post("/api/batch", data={"item_id": ["a", "b"]})
-    assert r.status_code == 412
+    assert r.status_code == 404
+    r2 = client.post("/api/batch", data={"item_id": ["a", "b"]})
+    assert r2.status_code == 404
 
 
 def test_webhook_endpoint_does_not_exist(client):

@@ -51,7 +51,9 @@
     <small>
       Page {{ (start_index // limit) + 1 }} of {{ ((total - 1) // limit) + 1 if total else 1 }}
       &middot; showing {{ items|length }} of {{ total }} item(s)
-      &middot; clicking <em>Subtitle this</em> queues a job using the target language and mode above.
+      &middot; <strong>Subtitle now</strong> queues the row immediately with the target language + mode above.
+      <strong>+ Batch</strong> adds the row to a staging list (sticky at the bottom) where you can
+      edit each item's lang and mode before processing.
       {% if mode in ('scene', 'cinematic') %}
         <br><strong>Note:</strong> {{ mode }} mode requires <code>translation_provider=llm</code>
         with a vision-capable LLM backend. Adjust in <a href="/settings">Settings</a> if it isn't already.
@@ -62,69 +64,55 @@
   {% if not items %}
     <p><em>No items match.</em></p>
   {% else %}
-    <form id="batch-form"
-          hx-post="/api/batch"
-          hx-swap="none"
-          hx-on::after-request="onBatchResult(event)">
-      <input type="hidden" name="target_lang" value="{{ target_lang }}">
-      <input type="hidden" name="mode" value="{{ mode }}">
-      {# Hidden item_id inputs are populated by JS from localStorage so the
-         batch persists across pagination. The visible checkboxes below carry
-         data-item-id only (no name attribute) to avoid duplicate submissions. #}
-      <div id="batch-hidden-fields" hidden></div>
-
-      <div class="batch-action-bar">
-        <strong>Batch:</strong>
-        <span><span id="selected-count">0</span> selected<span id="off-page-note"></span></span>
-        <button type="button" class="secondary outline" id="select-all-btn">Select all visible</button>
-        <button type="button" class="secondary outline" id="clear-selection-btn">Clear all</button>
-        <button type="submit" id="batch-submit-btn" disabled>Subtitle selected</button>
-        <span id="batch-result" class="batch-result"></span>
-      </div>
-
-      <table class="library-table">
-        <thead>
-          <tr>
-            <th class="col-checkbox"><input type="checkbox" id="select-all-cb" aria-label="Select all visible"></th>
-            <th class="col-name">Name</th>
-            <th class="col-type">Type</th>
-            <th class="col-sub">{{ target_lang }} sub?</th>
-            <th class="col-path">Path</th>
-            <th class="col-action"></th>
-            <th class="col-result"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for item in items %}
-          <tr>
-            <td class="col-checkbox"><input type="checkbox" data-item-id="{{ item.id }}" data-item-name="{{ item.name }}" class="item-cb" aria-label="Select {{ item.name }}"></td>
-            <td class="col-name" title="{{ item.name }}">{{ item.name }}</td>
-            <td class="col-type">{{ item.type }}</td>
-            <td class="col-sub">
-              {% if item.has_target_subtitle %}
-                <span class="status-pill ok">yes</span>
-              {% else %}
-                <span class="status-pill warn">missing</span>
-              {% endif %}
-            </td>
-            <td class="col-path"><code class="path" title="{{ item.path }}">{{ item.path }}</code></td>
-            <td class="col-action">
+    <table class="library-table">
+      <thead>
+        <tr>
+          <th class="col-name">Name</th>
+          <th class="col-type">Type</th>
+          <th class="col-sub">{{ target_lang }} sub?</th>
+          <th class="col-path">Path</th>
+          <th class="col-action"></th>
+          <th class="col-result"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in items %}
+        <tr data-item-id="{{ item.id }}" data-item-name="{{ item.name }}">
+          <td class="col-name" title="{{ item.name }}">{{ item.name }}</td>
+          <td class="col-type">{{ item.type }}</td>
+          <td class="col-sub">
+            {% if item.has_target_subtitle %}
+              <span class="status-pill ok">yes</span>
+            {% else %}
+              <span class="status-pill warn">missing</span>
+            {% endif %}
+          </td>
+          <td class="col-path"><code class="path" title="{{ item.path }}">{{ item.path }}</code></td>
+          <td class="col-action">
+            <div class="row-actions">
               <button type="button" class="secondary subtitle-btn"
                       hx-post="/api/process/{{ item.id }}?target_lang={{ target_lang }}&mode={{ mode }}"
                       hx-swap="none"
-                      hx-on::after-request="showJobResult('row-result-{{ item.id }}', event.detail.xhr, event.detail.successful)">
-                Subtitle this
+                      hx-on::after-request="showJobResult('row-result-{{ item.id }}', event.detail.xhr, event.detail.successful)"
+                      title="Queue this item now with the target language + mode from the filter form above">
+                ▶ Subtitle now
               </button>
-            </td>
-            <td class="col-result"><span id="row-result-{{ item.id }}"></span></td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </form>
+              <button type="button" class="secondary outline add-to-batch-btn"
+                      data-item-id="{{ item.id }}"
+                      data-item-name="{{ item.name }}"
+                      title="Add this item to the batch (target lang + mode editable per-item below)">
+                + Batch
+              </button>
+            </div>
+          </td>
+          <td class="col-result"><span id="row-result-{{ item.id }}"></span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
 
     {% set base_qs = "?q=" ~ q ~ "&target_lang=" ~ target_lang ~ "&mode=" ~ mode ~ "&missing_only=" ~ ('1' if missing_only else '0') ~ "&limit=" ~ limit %}
-    <div style="margin-top: 1rem; display: flex; gap: 1rem; align-items: center;">
+    <div style="margin: 1rem 0; display: flex; gap: 1rem; align-items: center;">
       {% if start_index > 0 %}
         <a href="{{ base_qs }}&start_index={{ start_index - limit if start_index >= limit else 0 }}">← Previous</a>
       {% else %}
@@ -139,172 +127,300 @@
         <span style="color: var(--pico-muted-color);">Next →</span>
       {% endif %}
     </div>
-
-    <script>
-      // ── Batch selection with cross-page persistence ─────────────────────────
-      // Selected item IDs live in localStorage so the batch survives
-      // pagination, filter changes, and accidental reloads. On every render:
-      //  1) read the saved selection
-      //  2) tick the visible checkboxes whose item id is in the selection
-      //  3) populate hidden <input name="item_id"> fields for the *entire*
-      //     selection (not just the visible page) — the form posts those
-      //     to /api/batch.
-      // Visible checkboxes carry data-item-id but no `name` attribute, so they
-      // never submit on their own — they're just UI affordances that toggle
-      // the saved selection.
-      (function () {
-        const STORAGE_KEY = 'subtitleThis.batchSelection';
-
-        const itemCbs = document.querySelectorAll('input.item-cb');
-        if (!itemCbs.length) return;
-
-        const countEl = document.getElementById('selected-count');
-        const offPageNoteEl = document.getElementById('off-page-note');
-        const submitBtn = document.getElementById('batch-submit-btn');
-        const headerCb = document.getElementById('select-all-cb');
-        const resultEl = document.getElementById('batch-result');
-        const hiddenFieldsEl = document.getElementById('batch-hidden-fields');
-
-        // ── Persisted state: { itemId: itemName } ──────────────────────────────
-        function loadSelection() {
-          try {
-            return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-          } catch (e) {
-            return {};
-          }
-        }
-        function saveSelection(sel) {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(sel));
-        }
-
-        let selection = loadSelection();
-
-        // Visible-page lookup so we can quickly tell on/off-page count
-        const visibleIds = new Set(
-          Array.from(itemCbs).map(c => c.dataset.itemId)
-        );
-
-        // ── Render: hidden inputs + on-screen counts ───────────────────────────
-        function renderHiddenInputs() {
-          // Replace every child of #batch-hidden-fields with one <input type="hidden">
-          // per selected item id.
-          hiddenFieldsEl.replaceChildren();
-          for (const id of Object.keys(selection)) {
-            const inp = document.createElement('input');
-            inp.type = 'hidden';
-            inp.name = 'item_id';
-            inp.value = id;
-            hiddenFieldsEl.appendChild(inp);
-          }
-        }
-
-        function updateUI() {
-          const ids = Object.keys(selection);
-          const total = ids.length;
-          const offPage = ids.filter(id => !visibleIds.has(id)).length;
-          const visibleSelected = total - offPage;
-
-          countEl.textContent = total;
-          submitBtn.disabled = total === 0;
-
-          if (offPage > 0) {
-            offPageNoteEl.textContent =
-              ' (' + visibleSelected + ' on this page, ' + offPage + ' from other pages)';
-          } else {
-            offPageNoteEl.textContent = '';
-          }
-
-          // Header checkbox state — reflects only the visible page.
-          const allVisibleChecked = visibleSelected > 0 && visibleSelected === itemCbs.length;
-          headerCb.checked = allVisibleChecked;
-          headerCb.indeterminate = visibleSelected > 0 && !allVisibleChecked;
-        }
-
-        // ── Wire up: pre-check visible boxes from saved selection ──────────────
-        itemCbs.forEach(cb => {
-          if (selection[cb.dataset.itemId]) cb.checked = true;
-          cb.addEventListener('change', () => {
-            const id = cb.dataset.itemId;
-            const name = cb.dataset.itemName;
-            if (cb.checked) {
-              selection[id] = name;
-            } else {
-              delete selection[id];
-            }
-            saveSelection(selection);
-            renderHiddenInputs();
-            updateUI();
-          });
-        });
-
-        headerCb.addEventListener('change', () => {
-          // Apply header state only to visible rows; off-page selection untouched.
-          itemCbs.forEach(cb => {
-            cb.checked = headerCb.checked;
-            const id = cb.dataset.itemId;
-            const name = cb.dataset.itemName;
-            if (cb.checked) {
-              selection[id] = name;
-            } else {
-              delete selection[id];
-            }
-          });
-          saveSelection(selection);
-          renderHiddenInputs();
-          updateUI();
-        });
-
-        document.getElementById('select-all-btn').addEventListener('click', () => {
-          itemCbs.forEach(cb => {
-            cb.checked = true;
-            selection[cb.dataset.itemId] = cb.dataset.itemName;
-          });
-          saveSelection(selection);
-          renderHiddenInputs();
-          updateUI();
-        });
-
-        document.getElementById('clear-selection-btn').addEventListener('click', () => {
-          // Clear EVERYTHING — including off-page items. Distinct from a
-          // per-page clear (which we don't expose because users rarely want it).
-          selection = {};
-          saveSelection(selection);
-          itemCbs.forEach(cb => { cb.checked = false; });
-          renderHiddenInputs();
-          updateUI();
-          resultEl.innerHTML = '';
-        });
-
-        window.onBatchResult = function (event) {
-          const ok = event.detail.successful;
-          if (ok) {
-            try {
-              const r = JSON.parse(event.detail.xhr.responseText);
-              resultEl.innerHTML = '<span class="status-pill ok">queued ' + r.submitted +
-                ' · skipped ' + r.skipped + '</span>';
-              // Successful submit → drain the saved selection so the user
-              // doesn't accidentally re-queue the same items on next browse.
-              selection = {};
-              saveSelection(selection);
-              itemCbs.forEach(cb => { cb.checked = false; });
-              renderHiddenInputs();
-              updateUI();
-            } catch (e) {
-              resultEl.innerHTML = '<span class="status-pill ok">queued</span>';
-            }
-          } else {
-            const detail = (event.detail.xhr.responseText || '').slice(0, 120);
-            resultEl.innerHTML = '<span class="status-pill err">HTTP ' +
-              event.detail.xhr.status + ' · ' + detail + '</span>';
-          }
-        };
-
-        // First paint
-        renderHiddenInputs();
-        updateUI();
-      })();
-    </script>
   {% endif %}
+
+  {# Sticky batch panel at the bottom — visible only when the batch has items.
+     Renders fully from localStorage; supports per-item lang + mode editing,
+     row removal, batch-wide processing, and a clear-all action. #}
+  <div id="batch-panel" class="batch-panel" hidden>
+    <div class="batch-summary">
+      <strong>Batch:</strong>
+      <span><span id="batch-count">0</span> items</span>
+      <button type="button" class="secondary outline" id="batch-toggle">▼ Show items</button>
+      <button type="button" id="batch-process">Process batch</button>
+      <button type="button" class="secondary outline" id="batch-clear">Clear all</button>
+      <span id="batch-result" class="batch-result"></span>
+    </div>
+    <table id="batch-items" class="batch-items-table" hidden>
+      <thead>
+        <tr>
+          <th class="col-name">Item</th>
+          <th class="col-target-lang">Target lang</th>
+          <th class="col-mode">Mode</th>
+          <th class="col-status"></th>
+          <th class="col-remove"></th>
+        </tr>
+      </thead>
+      <tbody id="batch-items-body"></tbody>
+    </table>
+  </div>
+
+  {# Hidden template data: language and mode options for JS-rendered batch panel rows. #}
+  <script type="application/json" id="batch-panel-data">
+    {
+      "languages": [
+        {% for code, name in language_options %}
+          {"code": {{ code|tojson }}, "name": {{ name|tojson }}}{% if not loop.last %},{% endif %}
+        {% endfor %}
+      ],
+      "modes": {{ modes|tojson }},
+      "default_target_lang": {{ target_lang|tojson }},
+      "default_mode": {{ mode|tojson }}
+    }
+  </script>
+
+  <script>
+    /*
+     * Batch flow with per-item lang/mode editing.
+     *
+     * Each row's "+ Batch" button captures the item id+name AND the
+     * filter form's CURRENT target_lang and mode at click time, then
+     * appends to localStorage. The batch panel at the bottom renders
+     * from localStorage on every change. Each batched row has its
+     * own editable lang and mode dropdowns so the user can override
+     * per-item before processing.
+     *
+     * "Process batch" iterates the batch and POSTs /api/process/{id}
+     * once per item with that item's specific lang+mode in the query
+     * string. Results are accumulated and shown in the panel.
+     */
+    (function () {
+      const STORAGE_KEY = 'subtitleThis.batch';
+      const data = JSON.parse(document.getElementById('batch-panel-data').textContent);
+
+      const panel = document.getElementById('batch-panel');
+      const countEl = document.getElementById('batch-count');
+      const toggleBtn = document.getElementById('batch-toggle');
+      const itemsTable = document.getElementById('batch-items');
+      const itemsBody = document.getElementById('batch-items-body');
+      const processBtn = document.getElementById('batch-process');
+      const clearBtn = document.getElementById('batch-clear');
+      const resultEl = document.getElementById('batch-result');
+
+      // ── State (persisted) ────────────────────────────────────────────────
+      function loadBatch() {
+        try {
+          return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+        } catch (e) {
+          return [];
+        }
+      }
+      function saveBatch(b) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(b));
+      }
+      let batch = loadBatch();
+
+      // Migration: older versions stored an object {id: name}. Convert to
+      // the new array shape if we detect that legacy format.
+      if (!Array.isArray(batch)) {
+        batch = Object.entries(batch).map(([id, name]) => ({
+          id, name,
+          target_lang: data.default_target_lang,
+          mode: data.default_mode,
+        }));
+        saveBatch(batch);
+      }
+
+      // ── Render ────────────────────────────────────────────────────────────
+      function buildOption(value, label, selectedValue) {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = label;
+        if (value === selectedValue) opt.selected = true;
+        return opt;
+      }
+
+      function renderBatch() {
+        countEl.textContent = batch.length;
+        if (batch.length === 0) {
+          panel.hidden = true;
+          itemsTable.hidden = true;
+          toggleBtn.textContent = '▼ Show items';
+          resultEl.innerHTML = '';
+          return;
+        }
+        panel.hidden = false;
+
+        // Re-render the per-item table from current state.
+        itemsBody.replaceChildren();
+        batch.forEach((entry, idx) => {
+          const tr = document.createElement('tr');
+
+          const tdName = document.createElement('td');
+          tdName.className = 'col-name';
+          tdName.textContent = entry.name;
+          tdName.title = entry.name;
+          tr.appendChild(tdName);
+
+          const tdLang = document.createElement('td');
+          tdLang.className = 'col-target-lang';
+          const langSel = document.createElement('select');
+          for (const lang of data.languages) {
+            langSel.appendChild(
+              buildOption(lang.code, lang.name + ' (' + lang.code + ')', entry.target_lang)
+            );
+          }
+          langSel.addEventListener('change', () => {
+            batch[idx].target_lang = langSel.value;
+            saveBatch(batch);
+          });
+          tdLang.appendChild(langSel);
+          tr.appendChild(tdLang);
+
+          const tdMode = document.createElement('td');
+          tdMode.className = 'col-mode';
+          const modeSel = document.createElement('select');
+          for (const m of data.modes) {
+            modeSel.appendChild(buildOption(m, m, entry.mode));
+          }
+          modeSel.addEventListener('change', () => {
+            batch[idx].mode = modeSel.value;
+            saveBatch(batch);
+          });
+          tdMode.appendChild(modeSel);
+          tr.appendChild(tdMode);
+
+          const tdStatus = document.createElement('td');
+          tdStatus.className = 'col-status';
+          tdStatus.id = 'batch-row-status-' + entry.id;
+          tr.appendChild(tdStatus);
+
+          const tdRemove = document.createElement('td');
+          tdRemove.className = 'col-remove';
+          const removeBtn = document.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.className = 'secondary outline';
+          removeBtn.textContent = '×';
+          removeBtn.title = 'Remove from batch';
+          removeBtn.addEventListener('click', () => {
+            batch.splice(idx, 1);
+            saveBatch(batch);
+            renderBatch();
+          });
+          tdRemove.appendChild(removeBtn);
+          tr.appendChild(tdRemove);
+
+          itemsBody.appendChild(tr);
+        });
+      }
+
+      // ── "+ Batch" buttons on each row ─────────────────────────────────────
+      // Captures the current filter form's target_lang + mode at click time.
+      const filterForm = document.querySelector('form[action="/library"]');
+      function captureFilterDefaults() {
+        if (!filterForm) {
+          return { target_lang: data.default_target_lang, mode: data.default_mode };
+        }
+        return {
+          target_lang: filterForm.elements.target_lang.value,
+          mode: filterForm.elements.mode.value,
+        };
+      }
+
+      document.querySelectorAll('.add-to-batch-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const id = btn.dataset.itemId;
+          const name = btn.dataset.itemName;
+          if (batch.some(e => e.id === id)) {
+            // Already in batch — give visual feedback and skip duplicate add.
+            btn.textContent = '✓ in batch';
+            setTimeout(() => { btn.textContent = '+ Batch'; }, 1500);
+            return;
+          }
+          const defaults = captureFilterDefaults();
+          batch.push({
+            id, name,
+            target_lang: defaults.target_lang,
+            mode: defaults.mode,
+          });
+          saveBatch(batch);
+          renderBatch();
+          // Brief flash on the add button.
+          btn.textContent = '✓ added';
+          setTimeout(() => { btn.textContent = '+ Batch'; }, 1200);
+        });
+      });
+
+      // ── Toggle expanded view ──────────────────────────────────────────────
+      toggleBtn.addEventListener('click', () => {
+        const expanded = !itemsTable.hidden;
+        itemsTable.hidden = expanded;
+        toggleBtn.textContent = expanded ? '▼ Show items' : '▲ Hide items';
+      });
+
+      // ── Clear ─────────────────────────────────────────────────────────────
+      clearBtn.addEventListener('click', () => {
+        if (batch.length === 0) return;
+        if (!confirm('Remove all ' + batch.length + ' items from the batch?')) return;
+        batch = [];
+        saveBatch(batch);
+        renderBatch();
+      });
+
+      // ── Process: iterate the batch, fire one /api/process call per item ──
+      processBtn.addEventListener('click', async () => {
+        if (batch.length === 0) return;
+        if (!confirm('Queue ' + batch.length + ' job' + (batch.length === 1 ? '' : 's') + '?')) return;
+
+        processBtn.disabled = true;
+        clearBtn.disabled = true;
+        resultEl.innerHTML = '<span class="status-pill running">processing…</span>';
+        // Make the per-item table visible so the user sees status flow in.
+        itemsTable.hidden = false;
+        toggleBtn.textContent = '▲ Hide items';
+
+        let queued = 0;
+        let failed = 0;
+        // Snapshot the batch so removals during processing don't shift idx.
+        const snapshot = batch.slice();
+
+        for (const entry of snapshot) {
+          const statusEl = document.getElementById('batch-row-status-' + entry.id);
+          if (statusEl) statusEl.innerHTML = '<span class="status-pill running">…</span>';
+          const url = '/api/process/' + encodeURIComponent(entry.id) +
+            '?target_lang=' + encodeURIComponent(entry.target_lang) +
+            '&mode=' + encodeURIComponent(entry.mode);
+          try {
+            const resp = await fetch(url, { method: 'POST' });
+            if (resp.ok) {
+              queued++;
+              if (statusEl) statusEl.innerHTML = '<span class="status-pill queued">queued</span>';
+            } else {
+              failed++;
+              const detail = (await resp.text()).slice(0, 80);
+              if (statusEl) statusEl.innerHTML =
+                '<span class="status-pill err">HTTP ' + resp.status + '</span>';
+            }
+          } catch (e) {
+            failed++;
+            if (statusEl) statusEl.innerHTML =
+              '<span class="status-pill err">network err</span>';
+          }
+        }
+
+        resultEl.innerHTML = '<span class="status-pill ok">queued ' + queued +
+          (failed > 0 ? ' · failed ' + failed : '') + '</span>';
+        // Drain processed items from the batch (keep failures so user can retry).
+        if (failed === 0) {
+          batch = [];
+          saveBatch(batch);
+          // Wait a moment so the user sees the success status, then collapse.
+          setTimeout(() => { renderBatch(); }, 1500);
+        } else {
+          // Keep the batch as-is so the user can retry; but successes are
+          // also retained which means re-clicking Process will re-queue them.
+          // The cache will turn re-runs into instant cache hits, so this is
+          // generally fine — the alternative (tracking which succeeded) is
+          // more state for marginal benefit.
+        }
+        processBtn.disabled = false;
+        clearBtn.disabled = false;
+      });
+
+      // First paint
+      renderBatch();
+    })();
+  </script>
 
   {% endif %}
 </section>

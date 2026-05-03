@@ -5,7 +5,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Form, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 
@@ -49,15 +49,6 @@ class ItemSummary(BaseModel):
     path: str
     type: str
     has_target_subtitle: bool
-
-
-class BatchResult(BaseModel):
-    """Aggregate result of a multi-item submission. Returned by /api/batch.
-    `submitted` and `skipped` add up to the size of the input id list;
-    `job_ids` only contains the ids that landed in the queue."""
-    submitted: int
-    skipped: int
-    job_ids: list[str]
 
 
 class JobView(BaseModel):
@@ -249,50 +240,6 @@ def process_item(
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     return JobView(**job.to_dict())
-
-
-@router.post("/batch", response_model=BatchResult)
-def process_batch(
-    item_id: list[str] = Form([]),
-    target_lang: str | None = Form(None),
-    mode: str | None = Form(None),
-    translation_provider: str | None = Form(None),
-) -> BatchResult:
-    """Queue translation jobs for a user-selected batch of media-server items.
-
-    Backs the multi-select action on the Library page: user ticks N rows,
-    clicks "Subtitle selected", we receive the list of item ids as repeated
-    `item_id` form fields. Every selected item is queued unconditionally —
-    we don't skip items that already have a subtitle, because the user may
-    be deliberately re-running with new Settings. Items whose server lookup
-    fails or which fail mode/provider validation are tallied in `skipped`
-    so the UI can surface that count.
-    """
-    if not item_id:
-        raise HTTPException(400, "no item ids provided")
-
-    server = media_server_client()
-    submitted: list[str] = []
-    skipped = 0
-    for iid in item_id:
-        try:
-            item = server.get_item(iid)
-        except MediaServerError:
-            skipped += 1
-            continue
-        try:
-            job = submit_item_job(
-                server=server,
-                item=item,
-                target_lang=target_lang,
-                mode=mode,
-                translation_provider=translation_provider,
-            )
-            submitted.append(job.id)
-        except ValueError:
-            skipped += 1
-
-    return BatchResult(submitted=len(submitted), skipped=skipped, job_ids=submitted)
 
 
 @router.get("/jobs", response_model=list[JobView])
