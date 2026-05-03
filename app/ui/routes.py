@@ -178,9 +178,13 @@ _FIELD_META: list[dict[str, Any]] = [
      "help": (
          "• cpu uses faster-whisper, runs entirely on the CPU. INT8 quantization keeps it "
          "tractable but slow. Works on any host.\n"
-         "• openvino exports Whisper to OpenVINO IR and runs the encoder on the Intel iGPU. "
+         "• openvino exports Whisper to OpenVINO IR and runs inference on the Intel iGPU. "
          "Only works in the openvino-flavored image with /dev/dri exposed (TrueNAS Scale "
-         "with N305/N100/iGPU-equipped Intel host)."
+         "with N305/N100/iGPU-equipped Intel host).\n"
+         "Note even with openvino, several pipeline steps stay CPU-bound: ffmpeg audio "
+         "extraction, the language-detection pre-pass (faster-whisper-tiny on untagged "
+         "audio), and the FIRST run's IR conversion (5-30 min, one-off). 100% CPU during "
+         "those phases is normal."
      )},
     {"key": "whisper_model", "section": "Speech-to-Text", "label": "Whisper model", "type": "select",
      "options": [
@@ -213,9 +217,21 @@ _FIELD_META: list[dict[str, Any]] = [
          {"value": "cuda", "label": "cuda · [NVIDIA GPU] needs nvidia-container-toolkit (rare on TrueNAS)"},
      ],
      "help": "Where faster-whisper runs. cuda only matters if you've added an NVIDIA GPU."},
-    # NOTE: openvino_device is intentionally not exposed in the UI. AUTO is
-    # always the right choice (OpenVINO picks GPU when available, falls back
-    # to CPU otherwise). Power users can override via BABEL_OPENVINO_DEVICE.
+    {"key": "openvino_device", "section": "Speech-to-Text",
+     "label": "OpenVINO device", "type": "select",
+     "show_if": {"field": "whisper_backend", "equals": "openvino"},
+     "options": [
+         {"value": "AUTO", "label": "AUTO · [recommended] picks GPU when available, falls back to CPU silently"},
+         {"value": "GPU",  "label": "GPU · force Intel iGPU — fails loudly if /dev/dri or driver isn't available"},
+         {"value": "CPU",  "label": "CPU · force CPU even on iGPU hosts (useful for benchmarking)"},
+     ],
+     "help": (
+         "Where OpenVINO runs inference (Whisper STT and NLLB translation). "
+         "AUTO is the right default but silently falls back to CPU if it can't "
+         "use the GPU — switch to GPU explicitly to surface the real reason. "
+         "Watch `docker logs subtitle-this` after a model load: the line "
+         "'[openvino] whisper:…  selected=GPU' confirms what was actually picked."
+     )},
 
     # ── Defaults — the cost lever ─────────────────────────────────────────────
     {"key": "default_target_lang", "section": "Defaults",

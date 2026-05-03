@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -7,6 +8,17 @@ from app import jobs
 from app.api.manage import router as manage_router
 from app.api.settings_api import router as settings_router
 from app.ui.routes import router as ui_router
+
+
+# Surface our INFO-level logs (e.g. the [openvino] device-selection line) in
+# `docker logs`. Uvicorn doesn't propagate non-uvicorn loggers by default at
+# INFO, so we wire up a basic stderr handler if nothing else has.
+_pkg_logger = logging.getLogger("subtitle_this")
+if not _pkg_logger.handlers:
+    h = logging.StreamHandler()
+    h.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+    _pkg_logger.addHandler(h)
+_pkg_logger.setLevel(logging.INFO)
 
 
 @asynccontextmanager

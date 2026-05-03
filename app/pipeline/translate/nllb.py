@@ -17,6 +17,7 @@ loop below doesn't need to know which one it got.
 from functools import lru_cache
 
 from app.config import settings
+from app.pipeline.openvino_introspect import log_selected_device
 from app.pipeline.stt import Cue
 from app.pipeline.translate.base import TranslationError
 
@@ -69,6 +70,7 @@ def _model_and_tokenizer(model_id: str, device: str, cache_root: str):
             device=device,
             cache_dir=str(cache_dir),
         )
+        log_selected_device("nllb:" + model_id, requested=device, model=model)
         return model, tokenizer
     except ImportError:
         pass   # CPU image — fall through to plain transformers below.

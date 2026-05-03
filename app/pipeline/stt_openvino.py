@@ -4,15 +4,18 @@ Uses Hugging Face Whisper exported to OpenVINO IR. The first call for a given
 model triggers download + IR conversion (slow, 5-30 min depending on size);
 subsequent calls hit the cached IR and run on the configured device.
 """
+import logging
 from functools import lru_cache
 from pathlib import Path
 
 import soundfile as sf
 
 from app.config import settings
+from app.pipeline.openvino_introspect import log_selected_device
 from app.pipeline.stt import Cue, TranscriptionResult
 
 
+_log = logging.getLogger("subtitle_this")
 _HF_PREFIX = "openai/whisper-"
 
 
@@ -34,6 +37,7 @@ def _pipeline(model_name: str, device: str, cache_root: str):
         device=device,
         cache_dir=str(cache_dir),
     )
+    log_selected_device("whisper:" + model_name, requested=device, model=model)
 
     return hf_pipeline(
         "automatic-speech-recognition",
