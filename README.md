@@ -2,7 +2,7 @@
 
 Auto-generates target-language subtitles for media in your **Emby, Jellyfin, or Plex** library — YouTube auto-caption style — using Whisper for speech-to-text and an LLM of your choice for translation. Single-service: a single Python/FastAPI app (Docker) that talks to your media server's REST API directly. No server plugin to install.
 
-**LLM-agnostic and server-agnostic by design.** You pick your media server (Emby / Jellyfin / Plex), pick the translation engine, pick the vision engine if you want scene-aware translation — all from the web UI, no config files, no restart. Cloud LLMs (Anthropic / OpenAI / Gemini / OpenRouter / DeepSeek / Zhipu / …) or fully local (Ollama / LM Studio / LocalAI / vLLM / llama.cpp) — same UI, same UX.
+**LLM-agnostic and server-agnostic by design.** All configuration lives in the web UI; nothing requires editing files or restarting containers. Defaults are the cheapest, no-setup combination — the only thing you need to fill in to make subtitles is your media server URL + API key.
 
 ## Architecture
 
@@ -22,384 +22,264 @@ Auto-generates target-language subtitles for media in your **Emby, Jellyfin, or 
                            └──────────────────────────────────────────┘
 ```
 
-**Subtitle creation is exclusively a manual user action through the web UI.** Subtitle This deliberately does NOT expose a webhook receiver, an auto-trigger on `ItemAdded` events, a path-based curl endpoint, OR a "subtitle the entire library" sweep button. The two ways to create subtitles, both on the Library page:
+**Subtitle creation is exclusively a manual user action through the web UI.** No webhook, no auto-trigger on `ItemAdded`, no path-based curl endpoint, no whole-library "subtitle everything" button. Every subtitle is the result of a deliberate user click on a specific item or a specific batch.
 
-- **One item** — find the row you want, click *Subtitle this*.
-- **A custom batch** — tick checkboxes on as many rows as you want (the selection persists across pages and across reloads), then click *Subtitle selected* in the sticky toolbar above the table. One job per ticked item.
+## The default path (no setup beyond Emby)
 
-The whole-library sweep is intentionally absent — it was too easy to misuse and there's no real use case where "subtitle every single item in my 5000-film library at once" beats a deliberate batch selection.
+Out of the box, Subtitle This runs in this configuration:
+
+- **Translation**: NLLB-200 — free, local, no API key, no account
+- **Mode**: audio (Whisper transcribes, NLLB translates, no LLM calls)
+- **Whisper backend**: openvino on the openvino-flavored image, cpu otherwise
+- **Output filename**: `Movie.fr.audio.ai.vtt` next to the source media
+
+This is what you get with zero configuration past the media server URL + API key. NLLB downloads its 1.5 GB model on first translation; subsequent jobs use the cached model and run offline.
+
+You only need to configure anything beyond the media server credentials if you want **better translation quality** (LLM or DeepL — see [Advanced: upgrading from defaults](#advanced-upgrading-from-defaults)) or **scene-aware translation** (scene/cinematic modes — also Advanced).
 
 ## What you do as a user
 
-The whole point of Subtitle This is that you never edit a config file. You bring up the container, open `http://<host>:8765/`, and configure everything from three pages:
+1. Bring up the container (see [Quick start](#quick-start) below).
+2. Open `http://<host>:8765/`.
+3. Settings page → **Media server** section is at the top: pick your server type (Emby / Jellyfin / Plex), paste URL + API key (X-Plex-Token for Plex), save. Settings persist to disk and apply at runtime — no restart.
+4. Library page → browse your server's items. Click *Subtitle this* on a row, or tick checkboxes on multiple rows and hit *Subtitle selected* (selection persists across pages).
+5. Watch the dashboard — jobs auto-refresh every 3 seconds.
 
-1. **Settings page** — pick your **media server** (Emby / Jellyfin / Plex) and paste its URL + API key (Plex token), pick your translation engine (LLM or DeepL or NLLB), pick your vision engine (only if you want scene/cinematic modes), paste LLM API keys, point at endpoints. All persisted to disk and applied at runtime — no restart needed.
-2. **Library page** — browse your server's items, filter to "missing target-language sub", click *Subtitle this* on a single row, or multi-select rows for a custom batch (selection persists across pages).
-3. **Dashboard** — watch jobs progress in real time, sees Server / STT / LLM status pills.
-
-That's it. Env vars exist as an optional first-boot fallback for declarative deployments (TrueNAS YAML, etc.) — see the [Power-user knobs](#power-user-knobs) section at the bottom — but the canonical configuration surface is the web UI.
+That's the entire flow.
 
 ## Supported media servers
 
-| Server | Implementation | Auth | Notes |
+| Server | Implementation | Auth | Where to get the credential |
 | --- | --- | --- | --- |
-| **Emby** | `EmbyJellyfinClient` (shared) | `X-Emby-Token` header | The original. Generate the API key in Emby admin → Server Settings → Advanced → API Keys. |
-| **Jellyfin** | `EmbyJellyfinClient` (shared) | `X-Emby-Token` header (legacy compat) | Open-source fork of Emby; their REST API is functionally identical for our purposes. Generate the API key in Dashboard → API Keys. |
-| **Plex** | `PlexClient` | `X-Plex-Token` header | Different API + endpoint structure; the client handles the difference internally. Find your token on plex.tv/account → Authorized Devices, or grab it from any local-server URL in your browser after signing in. |
+| **Emby** | `EmbyJellyfinClient` (shared) | `X-Emby-Token` header | Emby admin → Server Settings → Advanced → API Keys → New API Key |
+| **Jellyfin** | `EmbyJellyfinClient` (shared) | `X-Emby-Token` header (legacy compat) | Dashboard → Advanced → API Keys → "+" |
+| **Plex** | `PlexClient` | `X-Plex-Token` header | Sign in at app.plex.tv, browse to a local-server URL, copy the `X-Plex-Token=…` from any request in DevTools |
 
-Pick your server type in Settings → Media server → Server type, paste URL + key, save. The library browser, per-item, and batch buttons all work the same regardless of which server backs them.
-
-## Quality tiers (modes)
-
-The mode controls how much visual context the translator gets. The tier is encoded in the output filename — `Movie.fr.audio.ai.vtt` vs `Movie.fr.scene.ai.vtt` vs `Movie.fr.cinematic.ai.vtt` — so multiple tiers can coexist for the same media without overwriting each other, and the cache is keyed by tier.
-
-| Mode        | What it does                                                                                                                                                                                                                                       | Cost     | Time                       |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------------------------- |
-| `audio`     | Whisper transcript → text translator. Speech only.                                                                                                                                                                                                 | $        | Whisper-bound only         |
-| `scene`     | Detect shots with ffmpeg's scene filter → extract one keyframe per shot → the configured **Vision LLM** generates a 1–2 sentence "scene bible" → translator gets it as cached system context plus a per-cue scene tag. Improves pronoun/gender/referent disambiguation. | $$       | + scene detection (5–15 min for a 2h film) + ~20 vision calls |
-| `cinematic` | Everything `scene` does **plus** one keyframe per cue attached as an image to translation calls. The translator literally sees what's on screen for each line.                                                                                       | $$$      | + per-cue frame extraction (slow, sequential) + many more API calls |
-
-**Defaults are the cheapest tier**: provider = `nllb` (free, fully local), mode = `audio` (no LLM calls beyond translation). The Settings UI is laid out as a cost ladder — climb from free/local at the top to configurable cost at the bottom. Change via Settings → Defaults, or per-request via the API body's `mode` / `translation_provider` fields.
-
-**`scene` and `cinematic` require translation provider = `llm`** with a vision-capable model — they read the keyframes through your Vision LLM and (in cinematic) attach frames to your Translation LLM. The processor refuses with a 400 if you combine them with DeepL or NLLB (text-only providers) or with a translation model you've flagged non-vision.
-
-The scene bible is cached on disk per `(file fingerprint, vision LLM model id, detection threshold)`, so once it's built, switching target language or going from `scene` to `cinematic` reuses it without re-running the vision pass.
-
-## Translation providers
-
-Three providers, picked from Settings → Defaults → *Who translates the cues?*:
-
-| Provider | Quality                                                                                         | Cost                                                | Where it runs              | Languages                |
-| -------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------- | ------------------------ |
-| `llm`    | Best — uses whichever LLM you configured. Idioms, nuance, cross-cue context, vision-aware in scene/cinematic modes. | Pay-per-token (cloud) or free (local LLM).          | Whatever you point it at   | Everything the LLM knows |
-| `deepl`  | Excellent for EU langs, best in class on those pairs. Text-only, no cross-cue context.          | Free tier: 500k chars/month (~6 movies). Paid above. | Cloud (DeepL API)          | ~30 (EU + EA majors)     |
-| `nllb`   | Fair-to-good. Covers the long tail of languages.                                                | Free, offline.                                      | Local — Intel iGPU via OpenVINO when available, plain CPU torch otherwise | 200 (FLORES-200 set) |
-
-### LLM models — split by function
-
-The `llm` provider and the scene-bible builder talk to LLMs. Subtitle This exposes them as **two function-named slots** in the settings UI — *Translation model* and *Vision model* — each independently configurable, so you can mix-and-match (e.g. cheap fast text model for translation + strong vision model for scene descriptions).
-
-#### Translation model
-
-Translates subtitle cues. In cinematic mode this same model also receives per-cue keyframes — pick a vision-capable one and tick the *Supports vision* checkbox if you plan to use cinematic.
-
-What makes a good translator: large parameter count, broad multilingual training, strong instruction-following.
-
-| Tier                | Cloud                                                            | Open-source — Chinese-strong              | Open-source — general                                       |
-| ------------------- | ---------------------------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------- |
-| Frontier            | claude-opus-4-7, gpt-4o, gemini-1.5-pro, mistral-large           | qwen2.5:72b, deepseek-v3, glm-4-flash     | llama3.1:70b, llama3.3:70b, command-r-plus                  |
-| Mid-tier            | claude-sonnet-4-6, gpt-4o-mini, gemini-2.0-flash                 | qwen2.5:32b, qwen2.5:14b                  | mistral-large, llama3.1:8b, gemma2:27b                      |
-| Cheap & fast        | claude-haiku-4-5, gpt-4o-mini                                    | qwen2.5:7b                                | llama3.1:8b, gemma2:9b                                      |
-
-#### Vision model
-
-Builds the scene bible (1-2 sentence description per shot). Used by `scene` and `cinematic` modes.
-
-What makes a good vision describer: strong OCR (read on-screen text), scene-understanding (count and identify characters, recognize settings), and concise output.
-
-| Tier         | Cloud                                                    | Open-source — Chinese-strong                                           | Open-source — general                                |
-| ------------ | -------------------------------------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------- |
-| Frontier     | claude-opus-4-7, gpt-4o, gemini-1.5-pro                  | qwen2.5-vl:72b *(among the strongest open vision models)*, glm-4v-plus | llava-1.6:34b, internvl2:26b, pixtral-12b           |
-| Mid-tier     | claude-sonnet-4-6, gpt-4o-mini, gemini-2.0-flash         | qwen2.5-vl:7b                                                          | llava:13b, minicpm-v:8b                              |
-| Cheap & fast | claude-haiku-4-5, gemini-1.5-flash                       | qwen2-vl:7b                                                            | llava:7b                                             |
-
-### Recipes — what to put in each Settings field
-
-Open the Settings page, scroll to **Translation model** and **Vision model**, and fill the four fields per slot: *Wire protocol*, *Endpoint URL*, *Model*, *API key*. **Local servers (Ollama, LM Studio, LocalAI) don't authenticate by default — leave the API key field blank.**
-
-#### A. Default — Anthropic for everything (cloud)
-
-| Slot               | Wire protocol | Endpoint           | Model               | API key            |
-| ------------------ | ------------- | ------------------ | ------------------- | ------------------ |
-| Translation model  | `anthropic`   | *(ignored)*        | `claude-opus-4-7`   | your Anthropic key |
-| Vision model       | `anthropic`   | *(ignored)*        | `claude-opus-4-7`   | your Anthropic key |
-
-#### B. OpenAI for everything (cloud)
-
-| Slot               | Wire protocol   | Endpoint                     | Model         | API key       |
-| ------------------ | --------------- | ---------------------------- | ------------- | ------------- |
-| Translation model  | `openai_compat` | `https://api.openai.com/v1`  | `gpt-4o-mini` | your key      |
-| Vision model       | `openai_compat` | `https://api.openai.com/v1`  | `gpt-4o`      | your key      |
-
-Tick **Supports vision** on the translation slot if you plan to use cinematic mode (gpt-4o-mini handles images).
-
-#### C. Fully local — Ollama (text + vision)
-
-No API keys anywhere. Pull the models on the Ollama host first: `ollama pull qwen2.5:72b && ollama pull qwen2.5-vl:72b`.
-
-| Slot               | Wire protocol   | Endpoint                     | Model              | API key |
-| ------------------ | --------------- | ---------------------------- | ------------------ | ------- |
-| Translation model  | `openai_compat` | `http://ollama:11434/v1`     | `qwen2.5:72b`      | *(blank)* |
-| Vision model       | `openai_compat` | `http://ollama:11434/v1`     | `qwen2.5-vl:72b`   | *(blank)* |
-
-Untick **Supports vision** on the translation slot — `qwen2.5` (text) doesn't see (disables cinematic, scene still works because that uses the vision slot).
-
-If your Ollama isn't on the docker network as `ollama`, use `http://<ollama-host>:11434/v1`.
-
-#### D. Mixed — cheap cloud text + local vision
-
-The translation slot's per-cue cost adds up; the vision slot fires once per shot (~200 calls per film) and benefits from a strong specialised model.
-
-| Slot               | Wire protocol   | Endpoint                          | Model              | API key   |
-| ------------------ | --------------- | --------------------------------- | ------------------ | --------- |
-| Translation model  | `openai_compat` | `https://api.openai.com/v1`       | `gpt-4o-mini`      | your key  |
-| Vision model       | `openai_compat` | `http://ollama:11434/v1`          | `qwen2.5-vl:72b`   | *(blank)* |
-
-#### E. LM Studio on the host machine (Docker → host network)
-
-| Slot               | Wire protocol   | Endpoint                                | Model                       | API key   |
-| ------------------ | --------------- | --------------------------------------- | --------------------------- | --------- |
-| Translation model  | `openai_compat` | `http://host.docker.internal:1234/v1`   | `Qwen2.5-72B-Instruct-MLX`  | *(blank)* |
-
-`host.docker.internal` resolves to the host machine on Docker Desktop and via TrueNAS Scale's docker default bridge.
-
-#### F. OpenRouter — one key, many models
-
-| Slot               | Wire protocol   | Endpoint                          | Model                            | API key       |
-| ------------------ | --------------- | --------------------------------- | -------------------------------- | ------------- |
-| Translation model  | `openai_compat` | `https://openrouter.ai/api/v1`    | `deepseek/deepseek-chat`         | your OR key   |
-| Vision model       | `openai_compat` | `https://openrouter.ai/api/v1`    | `qwen/qwen2.5-vl-72b-instruct`   | your OR key   |
-
-#### G. DeepSeek native + Zhipu (Chinese stack)
-
-| Slot               | Wire protocol   | Endpoint                                       | Model            | API key            |
-| ------------------ | --------------- | ---------------------------------------------- | ---------------- | ------------------ |
-| Translation model  | `openai_compat` | `https://api.deepseek.com/v1`                  | `deepseek-chat`  | your DeepSeek key  |
-| Vision model       | `openai_compat` | `https://open.bigmodel.cn/api/paas/v4`         | `glm-4v-plus`    | your Zhipu key     |
-
-### Wire protocol cheat sheet
-
-Each slot independently picks one of two protocols:
-
-| Type            | What it talks to                                                                                                                                                                                          |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `anthropic`     | Native Anthropic SDK. Prompt caching, adaptive thinking, strict JSON-schema enforcement. Pick this only when the model is a Claude variant.                                                                |
-| `openai_compat` | Any Chat-Completions-compatible endpoint: OpenAI proper, Ollama, LocalAI, OpenRouter, Together, Groq, Gemini's OpenAI-compat endpoint, DeepSeek native, Zhipu (GLM), vLLM, llama.cpp's http server, LM Studio. |
-
-Set per-slot endpoint (only used for `openai_compat`) and API key. The two slots are independent — paste the same key value in both if you're using one provider for everything.
-
-`deepl` auto-detects free vs paid by the API key suffix (`:fx` = free).
-
-`nllb` works on **both image flavors** out of the box. The openvino image runs it accelerated on the Intel iGPU via `optimum-intel` (5-10× faster); the CPU image falls back to plain PyTorch transformers. First call triggers an HF model download (~1.5 GB) cached to `/cache/nllb-models`. On openvino there's an additional one-off OpenVINO IR conversion (~5 min) that's also cached.
-
-## STT backends
-
-Two backends, selected from Settings → Speech-to-Text → Backend:
-
-| Backend     | When to use                                  | Image                                |
-| ----------- | -------------------------------------------- | ------------------------------------ |
-| `openvino`  | Intel iGPU host (e.g. N305, N100, modern NUCs) | `Dockerfile.openvino` (default) |
-| `cpu`       | Non-Intel host, or fallback                   | `Dockerfile`                  |
-
-The `openvino` backend uses **optimum-intel** with OpenVINO IR-converted Whisper, runs on the iGPU via `device="GPU"`. The IR conversion happens on first request (5–30 min depending on model size) and is cached on the volume — subsequent restarts are instant.
-
-The `cpu` backend uses `faster-whisper` with INT8 quantization. Slower but no special hardware needed.
+Pick the server type in Settings → Media server → Server type. The library browser, per-item buttons, and batch flow all behave identically regardless of which server backs them.
 
 ## Quick start (any docker host)
 
 ```sh
-# 1. Clone and bring up the container
-git clone <this-repo> subtitle-this
+git clone https://github.com/damienigg/subtitle-this.git
 cd subtitle-this
 mkdir -p ./cache && sudo chown -R 568:568 ./cache    # see "TrueNAS dataset perms" below
-docker compose up --build -d
-
-# 2. Open the web UI
-open http://localhost:8765/
-
-# 3. Go to Settings → fill in:
-#    - Media server section: pick Emby / Jellyfin / Plex, paste URL + API key
-#      (or X-Plex-Token for Plex)
-#    - Translation model (only if you switch the provider to LLM): wire protocol,
-#      endpoint (when openai_compat), model id, API key
-#    - Vision model (only if you want scene/cinematic): same fields
-#    - Defaults: target language, quality tier
-#    Click "Save settings". No restart needed.
-
-# 4. Go to Library → click "Subtitle this" on any item.
-# 5. Watch the dashboard — your first .vtt lands next to the source media.
+docker compose up -d
 ```
 
-The web UI shows:
-- **Dashboard** (`/`) — status pills, recent jobs (auto-refreshing).
-- **Library** (`/library`) — browse your media-server items (Emby / Jellyfin / Plex), search by name, filter to "missing target-lang sub", click *Subtitle this* on a row, or multi-select rows for a batch (selection persists across pages and reloads).
-- **Settings** (`/settings`) — every editable parameter (media server type + creds, STT backend, Whisper model, translation provider, default target language, scene-detection knobs, LLM keys, etc.) without redeploying.
+Open `http://localhost:8765/` and configure the Media server section. That's it — defaults handle the rest.
+
+The compose file uses the openvino-flavored image by default. Override `IMAGE_FLAVOR=cpu` for the CPU-only image (works on any x86_64 host without Intel iGPU).
+
+The web UI shows three pages:
+- **Dashboard** (`/`) — status pills + recent jobs (auto-refreshing).
+- **Library** (`/library`) — browse, search, filter to "missing target-lang sub", per-item *Subtitle this* button, multi-select for batch (selection persists across pages).
+- **Settings** (`/settings`) — every editable parameter. Sections hide themselves when not relevant given the current Defaults config.
 
 Settings persist to `/cache/settings.json` and override env defaults from compose.
 
 ## Creating subtitles
 
-Two flows, both on the Library page. There is no auto-trigger on item-added events, no webhook, no path-based curl endpoint, and no "subtitle the entire library" sweep — every subtitle is the result of a deliberate user action on a specific item or a specific batch.
+Two flows, both on the Library page:
 
 ### One item
 
 1. Open `/library`.
-2. Optional: filter to *missing target-language subtitle* and search for the item you care about.
-3. Click *Subtitle this* on the row. A job appears immediately on the dashboard's *Recent jobs* table and processes in the background.
+2. Optional: filter to *missing target-language subtitle*.
+3. Click *Subtitle this* on the row. A job appears on the dashboard's *Recent jobs* table and processes in the background.
 
 ### A custom batch
 
 1. Open `/library`.
-2. Optional: filter to *missing target-language subtitle* if you want to focus on what's missing.
-3. Tick the checkbox on each row you want subtitled. Selection persists across pagination and across page reloads (stored in `localStorage` under `subtitleThis.batchSelection`), so you can build a big batch by browsing through pages.
-4. Click *Subtitle selected* in the sticky toolbar above the table. One job is queued per ticked item using the target language + mode shown in the filter form.
+2. Tick the checkbox on each row you want subtitled. Selection persists across pagination AND page reloads (stored in `localStorage` under `subtitleThis.batchSelection`).
+3. Click *Subtitle selected* in the sticky toolbar above the table.
 
-After any job finishes, the result is cached (keyed by file fingerprint + target lang + provider + mode + STT model + translation/vision LLM model ids). Click *Subtitle this* again on the same item — same params — and it returns instantly. The cache also survives mtime bumps, file renames, and our own metadata write-back step via a content-fingerprint fallback (see the source-language detection section below). Switching the configured LLM in Settings invalidates the cache automatically.
+After a job finishes the result is cached, keyed by file fingerprint + target lang + provider + mode + STT model + translation/vision LLM model ids. The cache also survives mtime bumps, file renames, and our own metadata write-back step via a content-fingerprint fallback.
+
+## Quality tiers (modes)
+
+The mode controls how much visual context the translator gets. The tier is encoded in the output filename — `Movie.fr.audio.ai.vtt` vs `Movie.fr.scene.ai.vtt` vs `Movie.fr.cinematic.ai.vtt` — so multiple tiers can coexist for the same media without overwriting each other.
+
+| Mode | What it does | Cost | Time |
+| --- | --- | --- | --- |
+| `audio` | Whisper transcript → text translator. Speech only. | $ | Whisper-bound only |
+| `scene` | Adds an LLM-vision scene bible (one description per shot) for pronoun/gender disambiguation. | $$ | + scene detection (5–15 min) + ~20 vision calls |
+| `cinematic` | Everything `scene` does **plus** one keyframe per cue attached to translation calls. The translator literally sees what's on screen for each line. | $$$ | + per-cue frame extraction + many more API calls |
+
+**Default is `audio`.** scene and cinematic require translation provider = `llm` with a vision-capable model — see [Advanced: upgrading from defaults](#advanced-upgrading-from-defaults).
 
 ## Generating a media-server API key / token
 
-The credential format depends on which server you picked:
+- **Emby** — Server admin → Server Settings → Advanced → API Keys → New API Key.
+- **Jellyfin** — Dashboard → Advanced → API Keys → "+".
+- **Plex** — Sign in at app.plex.tv. Open any local-server URL. In browser DevTools (Network tab), copy the `X-Plex-Token=…` query parameter or header from any request to your server.
 
-- **Emby** — Server admin → Server Settings → Advanced → API Keys → New API Key. Copy the generated key into Settings → Media server → API key.
-- **Jellyfin** — Dashboard → Advanced → API Keys → "+" to create one. Same field in Subtitle This Settings.
-- **Plex** — your X-Plex-Token. Easiest path: sign in at app.plex.tv, open any local-server URL (e.g. browse to your library), then look in DevTools → Network for any request to `:32400` and copy the `X-Plex-Token=…` query parameter or header value. Alternative: visit `https://plex.tv/api/resources?X-Plex-Token=…` after `plex.tv/devices.xml`. Paste it into Settings → Media server → API key (the field doubles as the Plex token slot).
+## Deploying on TrueNAS Scale
 
-Subtitle This uses the credential to fetch item metadata, list/search the library, and trigger metadata refreshes after writing a new `.vtt`.
-
-## Deploying on TrueNAS Scale (24.10+ / Electric Eel and later)
-
-TrueNAS Scale's Apps system runs Docker natively and accepts docker-compose YAML via the **Custom App** dialog. Two paths:
+TrueNAS Scale 24.10+ runs Docker natively. Two deployment paths:
 
 ### Path A — build locally (simplest)
 
-SSH into TrueNAS, clone this repo to a dataset, and run docker-compose from the shell:
+SSH (or Web Shell at `https://<truenas>/ui/shell`) into TrueNAS, clone this repo to a dataset, and run docker-compose:
 
 ```sh
-ssh admin@truenas
-cd /mnt/tank/apps        # or wherever you keep apps
-git clone <this-repo> subtitle-this
+ssh admin@truenas      # or use the Web Shell
+cd /mnt/<pool>/apps
+git clone https://github.com/damienigg/subtitle-this.git
 cd subtitle-this
 mkdir -p ./cache && sudo chown -R 568:568 ./cache
 export RENDER_GID=$(getent group render | cut -d: -f3)
-# edit docker-compose.yml: change `/mnt/media:/mnt/media:ro` to your dataset path
-docker compose up --build -d
+# Edit docker-compose.yml: change `/mnt/media:/Movies:rw` to YOUR media path
+sudo docker compose up -d
 ```
 
-Open `http://<truenas-ip>:8765/` and configure everything from the Settings page — no .env file, no env vars.
+Open `http://<truenas-ip>:8765/` and configure from Settings.
 
-### Path B — pre-built image from GHCR (Custom App UI friendly)
+### Path B — pre-built image from GHCR
 
-The TrueNAS Apps UI doesn't reliably run `build:` — paste-into-Custom-App works best with pre-built images. The repo ships a GitHub Actions workflow (`.github/workflows/publish.yml`) that builds and pushes both image flavors to GHCR on every push to `main` and on version tags.
+The repo ships a GitHub Actions workflow that builds + pushes both image flavors to GHCR on every push to `main` and on version tags. Use this for paste-into-TrueNAS-Custom-App deployments.
 
-**One-time setup (in your fork):**
-
-1. Push the repo to GitHub.
-2. The `Publish container images` workflow runs automatically and creates two images at `ghcr.io/<your-username>/subtitle-this`.
-3. Make the package public so TrueNAS can pull without auth:
-   - Go to your GitHub profile → **Packages** tab → click `subtitle-this`
-   - **Package settings** → **Change visibility** → **Public**
-   - (Optional, recommended) **Manage Actions access** → Add the repo with **Write** role so future builds can update it.
-
-**On TrueNAS:**
-
-1. Edit `docker-compose.yml`: comment out the `build:` block, uncomment the `image:` line. Set `GHCR_OWNER` to your GitHub username/org.
-2. Paste the resulting YAML into **TrueNAS → Apps → Discover Apps → Custom App**.
-3. Once the container is up, open the web UI on `:8765` and finish the setup there — same as Path A.
+1. Fork the repo, push to GitHub. Workflow runs automatically and creates two images at `ghcr.io/<your-username>/subtitle-this`.
+2. Make the package public so the daemon can pull without auth: GitHub profile → Packages → click `subtitle-this` → Package settings → Change visibility → Public.
+3. Edit `docker-compose.yml`: comment out the `build:` block, uncomment the `image:` line. Set `GHCR_OWNER` to your GitHub username/org.
 
 **Image tags published:**
 
-| Tag                        | What                                                    | Retention |
-| -------------------------- | ------------------------------------------------------- | --------- |
-| `:openvino` / `:cpu`       | Moving "latest from main branch" pointer per flavor     | Always (only the most recent build kept) |
-| `:1.2.3-openvino`          | Pinned release (when you push a `v1.2.3` git tag)       | **Forever** — protected by the retention regex |
-| `:1.2-openvino`            | Floating major.minor                                    | **Forever** — protected by the retention regex |
-| `:openvino-sha-abc1234`    | Per-commit SHA tag from a main-branch build             | Pruned by the next main-branch build |
+| Tag | What | Retention |
+| --- | --- | --- |
+| `:openvino` / `:cpu` | Moving "latest from main branch" pointer per flavor | Always (only most recent build kept) |
+| `:1.2.3-openvino` | Pinned release (when you push a `v1.2.3` git tag) | **Forever** — protected by the retention regex |
+| `:1.2-openvino` | Floating major.minor | **Forever** |
+| `:openvino-sha-abc1234` | Per-commit SHA tag | Pruned by the next main-branch build |
 
-**GHCR retention.** Each main-branch build runs `actions/delete-package-versions` after the push to keep only the latest 2 versions of the `subtitle-this` package (one cpu + one openvino). Old SHA-pinned versions get cleaned up automatically — the openvino image is several GB, so without this the storage adds up fast. Release-tagged versions (matching `v?\d+\.\d+(\.\d+)?(-(cpu|openvino))?`) are explicitly excluded from pruning, so when you publish a `v1.2.3` tag the resulting `1.2.3-cpu` and `1.2.3-openvino` images stay forever.
-
-For production deployments, pin to a specific version tag rather than `:openvino` — that gets you reproducibility AND insulation from the auto-prune.
+GHCR retention runs after every main-branch build (`actions/delete-package-versions@v5`, `min-versions-to-keep: 12` to preserve the multi-arch sub-manifests). Release-tagged versions are explicitly excluded from pruning.
 
 ### TrueNAS dataset write permissions
 
-Subtitle This runs as the **`app` user (UID/GID 568)** inside the container — not root. UID 568 was chosen deliberately to match the `apps` user that TrueNAS Scale 24.10+ uses for containerized apps. **On TrueNAS, this means dataset reads/writes Just Work without any ACL fiddling** — the `apps`-owned datasets are already writable by UID 568.
+Subtitle This runs as the **`app` user (UID/GID 568)** inside the container — chosen to match TrueNAS Scale 24.10+'s `apps` user. On TrueNAS, dataset reads/writes Just Work without ACL fiddling.
 
 Two host-side directories need to be writable by UID 568:
+1. **The cache bind-mount** (`./cache`) — model downloads + transcript cache + `settings.json`
+2. **The media library** — for writing `.vtt` files next to source media
 
-1. **The cache bind-mount** (`./cache`) — holds OpenVINO IR, HF model downloads, transcripts, and `settings.json`
-2. **The media library** (`/mnt/media` or wherever you mount it) — for writing the `.vtt` files next to source media
-
-If your host *isn't* TrueNAS, or your media dataset isn't owned by `apps`, you have three options:
-
-**(a) Override the runtime UID to match your host.**
-
-Find the dataset owner with `stat /mnt/<pool>/media` — note the `Uid` and `Gid`. Then either set `PUID`/`PGID` in your shell before `docker compose up`, or override directly in compose's `user:` line.
-
-**(b) Grant UID 568 access to your dataset.**
-
-From the host shell, grant UID 568 rwx on the media dataset (ACL or `chown`/`chmod`), and prepare the cache bind-mount:
+If your host isn't TrueNAS or your media dataset isn't owned by `apps`, set `PUID`/`PGID` in `.env` to match your dataset owner:
 
 ```sh
-mkdir -p ./cache && sudo chown -R 568:568 ./cache
+PUID=1000 PGID=1000 docker compose up -d
 ```
 
-This keeps the container running as the unprivileged `app` user and grants exactly the access it needs.
+Note: `group_add: ${RENDER_GID:-107}` in compose adds the host's `render` group to the container so the non-root `app` user can access `/dev/dri/renderD128` for OpenVINO iGPU inference. TrueNAS Scale 24.10+ uses GID 107; vanilla Ubuntu uses 109.
 
-**(c) Fall back to root.** Set `PUID=0 PGID=0` — loses the security benefit but works without any host-side perm changes.
+---
 
-If perms are wrong, you'll see `PermissionError: [Errno 13]` on the failed job in the dashboard — the rest of the pipeline runs fine, the `.vtt` just doesn't land on disk.
+## Advanced: upgrading from defaults
 
-Note: the `group_add: ${RENDER_GID:-107}` in compose adds the host's `render` group to the container user, which is what gives the non-root `app` user access to `/dev/dri/renderD128` for OpenVINO iGPU inference. Make sure `RENDER_GID` matches your host (`getent group render | cut -d: -f3`).
+Everything below is **optional**. Skip if NLLB + audio + your media server already meets your needs.
 
-### TrueNAS-specific notes
+### Better translation quality: switch provider
 
-- **Render GID**: TrueNAS Scale 24.10+ uses GID 107 by default (the `RENDER_GID` env var defaults to 107 in compose). Verify with `getent group render` on the host.
-- **Volume paths**: TrueNAS datasets live under `/mnt/<pool>/...`. Adjust the media volume to match your library, e.g. `- /mnt/tank/media:/mnt/media:ro`.
-- **iGPU passthrough**: if you also use the iGPU for jellyfin/plex/emby transcoding, all containers can share `/dev/dri` — there's no exclusive lock.
-- **Cache volume**: keep `./cache:/cache` on a fast dataset; the OpenVINO IR files are several GB for `large-v3-turbo`.
+Three providers, picked from Settings → Defaults → *Translation provider*:
 
-## Power-user knobs
+| Provider | Quality | Cost | Where it runs |
+| --- | --- | --- | --- |
+| `nllb` (default) | Fair-to-good. ~30 well-supported languages. | Free, offline | Local (OpenVINO when available, CPU torch fallback otherwise) |
+| `deepl` | Excellent for EU/Asian pairs. Text-only, no cross-cue context. | Free tier 500k chars/mo, paid above | Cloud (DeepL API) |
+| `llm` | Best — uses whichever LLM you configure. Idioms, nuance, cross-cue context, vision-aware in scene/cinematic. | Pay-per-token (cloud) or free (local LLM) | Whatever you point it at |
 
-Everything below is **optional**. The web UI covers the same surface and is the canonical configuration path. These env vars only matter if you prefer declarative deployment (TrueNAS Custom App YAML, GitOps, etc.) — they set first-boot defaults that the UI then overrides as soon as you click *Save settings*.
+Switching to LLM unhides the *Translation model* section in Settings.
 
-| Variable                       | Default              | Notes                                                                    |
-| ------------------------------ | -------------------- | ------------------------------------------------------------------------ |
-| `BABEL_WHISPER_BACKEND`        | `cpu`                | `cpu` (faster-whisper) or `openvino` (Intel iGPU). The OpenVINO Dockerfile sets `openvino`. |
-| `BABEL_WHISPER_MODEL`          | `small`              | `tiny`/`base`/`small`/`medium`/`large-v3`/`large-v3-turbo`              |
-| `BABEL_OPENVINO_DEVICE`        | `GPU`                | `GPU` for iGPU, `CPU` for OpenVINO-on-CPU, `AUTO` to let it pick         |
-| `BABEL_WHISPER_DEVICE`         | `cpu`                | (CPU backend only) `cpu`/`cuda`                                          |
-| `BABEL_WHISPER_COMPUTE_TYPE`   | `int8`               | (CPU backend only) `int8`/`int16`/`float16`/`float32`                    |
-| `BABEL_TRANSLATION_LLM_TYPE`   | `anthropic`          | `anthropic` or `openai_compat`                                           |
-| `BABEL_TRANSLATION_LLM_MODEL`  | `claude-opus-4-7`    | Translator model id (e.g. `gpt-4o-mini`, `qwen2.5:72b`, `deepseek-v3`) |
-| `BABEL_TRANSLATION_LLM_ENDPOINT` | `https://api.openai.com/v1` | Endpoint URL when type=openai_compat                            |
-| `BABEL_TRANSLATION_LLM_API_KEY` | (unset)             | API key for the translation slot                                         |
-| `BABEL_TRANSLATION_LLM_SUPPORTS_VISION` | `true`      | True if the translation model accepts images — required for cinematic   |
-| `BABEL_VISION_LLM_TYPE`        | `anthropic`          | `anthropic` or `openai_compat`                                           |
-| `BABEL_VISION_LLM_MODEL`       | `claude-opus-4-7`    | Scene-describer model id (e.g. `qwen2.5-vl:72b`, `gemini-1.5-pro`)     |
-| `BABEL_VISION_LLM_ENDPOINT`    | `https://api.openai.com/v1` | Endpoint URL when type=openai_compat                            |
-| `BABEL_VISION_LLM_API_KEY`     | (unset)              | API key for the vision slot                                              |
-| `BABEL_VISION_LLM_ENABLED`     | `true`               | Master switch for scene/cinematic modes                                  |
-| `BABEL_CACHE_DIR`              | `/cache`             | Cache directory for OpenVINO IR + transcripts                            |
-| `BABEL_NLLB_MODEL`             | `facebook/nllb-200-distilled-600M` | HuggingFace id for the local NLLB translator                |
-| `BABEL_TRANSLATION_BATCH_SIZE` | `30`                 | Cues per LLM API call (text-only mode)                                  |
-| `BABEL_MAX_LINE_CHARS`         | `42`                 | Subtitle line wrap width                                                 |
-| `BABEL_MAX_LINES_PER_CUE`      | `2`                  | Max display lines per cue (overflow merges into the last line, never drops content) |
-| `BABEL_DEFAULT_TARGET_LANG`    | `fr`                 | Default target language for per-item and batch jobs                     |
-| `BABEL_DEFAULT_SOURCE_LANG_PRIORITY` | `["en","ja","*"]` | Source-language preference for track selection (JSON list)             |
-| `BABEL_DEFAULT_TRANSLATION_PROVIDER` | `nllb`       | Default provider for per-item and batch jobs (`nllb`/`deepl`/`llm`). Default `nllb` is free, local, no key — works on both image flavors out of the box. |
-| `BABEL_DEFAULT_MODE`           | `audio`              | Default quality tier — `audio` / `scene` / `cinematic`                  |
-| `BABEL_SCENE_DETECTION_THRESHOLD` | `0.4`             | ffmpeg scene-detection threshold (0–1, lower = more scenes)              |
-| `BABEL_SCENE_MIN_LENGTH_SECONDS` | `1.5`              | Skip scenes shorter than this many seconds                               |
-| `BABEL_SCENE_MAX_SCENES`       | `500`                | Hard cap on detected scenes per file                                     |
-| `BABEL_SCENE_KEYFRAME_POSITION` | `midpoint`          | Where to grab the scene's keyframe — `start`/`midpoint`/`end`           |
-| `BABEL_SCENE_FRAME_MAX_SIZE`   | `1024`               | Long-edge px for scene keyframes sent to the vision LLM                 |
-| `BABEL_SCENE_BIBLE_BATCH_SIZE` | `10`                 | Scenes per vision LLM call when building the bible                      |
-| `BABEL_CINEMATIC_FRAME_MAX_SIZE` | `768`              | Long-edge px for per-cue frames in cinematic mode                       |
-| `BABEL_CINEMATIC_BATCH_SIZE`   | `10`                 | Cues per LLM call in cinematic mode                                     |
-| `BABEL_DEFAULT_SKIP_IF_TARGET_AUDIO_EXISTS` | `true` | Skip when target-language audio is already in the file                   |
-| `BABEL_MEDIA_SERVER_TYPE`      | `emby`               | Which media server to talk to: `emby` / `jellyfin` / `plex`             |
-| `BABEL_MEDIA_SERVER_URL`       | (unset)              | Server base URL (Emby/Jellyfin: `http://host:8096`; Plex: `http://host:32400`) |
-| `BABEL_MEDIA_SERVER_API_KEY`   | (unset)              | Emby/Jellyfin API key, or X-Plex-Token for Plex                         |
-| `BABEL_DEEPL_API_KEY`          | (unset)              | DeepL API key. Free-tier keys end in `:fx` (auto-detected)              |
+### Scene-aware translation: switch mode
 
-## Defaults and tradeoffs
+Mode `scene` improves pronoun and gendered-agreement decisions by feeding the translator a per-shot scene bible (built from keyframes via your Vision LLM). Mode `cinematic` additionally attaches a frame to each translation call.
 
-- **STT model is `small` by default** for quick iteration. For production quality on the iGPU, switch to `large-v3-turbo` (close to `large-v3` quality at ~2× the speed).
-- **OpenVINO first-run is slow.** The IR conversion for `large-v3-turbo` takes 15–30 min on the N305 and produces ~3 GB of IR files. Subsequent runs hit the cache and start in seconds. Watch the container logs the first time.
-- **Untagged audio tracks are auto-detected.** When ffprobe reports a track without a language tag (Emby just shows "Audio"), Subtitle This runs a Whisper-tiny detection pre-pass on the first 30s of the extracted audio (~2-3s extra per job, model is ~75 MB cached on first use). The detected ISO 639-1 code drives transcription so NLLB/DeepL get the right source language.
-- **Tag write-back is MKV-only and surgical.** When the detected language differs from "untagged", we persist it back into the source file's audio-stream metadata via `mkvpropedit` — which edits ONLY the EBML metadata header and never touches the audio/video data. No re-encode, no remux, no temporal manipulation, no risk of audio gaps. Restricted to `.mkv` / `.mka` / `.webm`. For non-Matroska containers (MP4 / MOV / AVI / …) the write-back is skipped on purpose: an `ffmpeg -c copy` remux would rewrite the whole file with documented edge cases (timestamp re-derivation on unusual MP4s, lost obscure metadata, full-I/O write window) that aren't worth the risk on a media library. Detection still drives transcription correctness for those files — only the persist-to-Emby polish is skipped. Disable entirely via Settings → Defaults → *Tag detected source language back into the source file*.
-- **Path-based contract:** the app reads media files directly from disk. Mount the same path inside the container that Emby sees. No file uploads over HTTP.
-- **Manual-trigger only:** subtitle creation is always an explicit user action in the UI. There is no webhook, no auto-trigger on Emby `ItemAdded`, no path-based curl endpoint. This is a deliberate scope decision — the goal is for the user to decide when each title gets translated.
-- **Cache hygiene.** The `./cache/` bind-mount holds three things: model weights (faster-whisper / OpenVINO IR / NLLB; can be tens of GB), per-file transcript JSON (small, one per `(file, target, mode, provider, llm-model)` combo), and the UI-mutated `settings.json`. Nothing currently expires — clear `cache/` to force a clean re-run, but be aware that re-conversion of OpenVINO IR is slow.
+Both require provider = `llm`. Switching mode to scene/cinematic in Defaults unhides the *Vision model* and *Scene & Cinematic* sections in Settings.
+
+### LLM configuration recipes
+
+Once you switch the Translation provider to LLM, the *Translation model* section appears with four fields: Wire protocol, Endpoint URL (if openai_compat), Model, API key. Common combinations:
+
+| Setup | Wire protocol | Endpoint | Model | API key |
+| --- | --- | --- | --- | --- |
+| Anthropic cloud | `anthropic` | *(ignored)* | `claude-opus-4-7` | your Anthropic key |
+| OpenAI cloud | `openai_compat` | `https://api.openai.com/v1` | `gpt-4o-mini` | your OpenAI key |
+| Local Ollama | `openai_compat` | `http://ollama:11434/v1` | `qwen2.5:72b` | *(blank)* |
+| LM Studio on host | `openai_compat` | `http://host.docker.internal:1234/v1` | model id from LM Studio | *(blank)* |
+| OpenRouter | `openai_compat` | `https://openrouter.ai/api/v1` | `deepseek/deepseek-chat` | your OR key |
+
+**Local servers (Ollama, LM Studio, LocalAI) don't authenticate by default — leave the API key blank.** The OpenAI SDK requires a non-empty key, so Subtitle This substitutes a placeholder transparently.
+
+For scene/cinematic, configure the Vision model section similarly. A common pattern: cloud LLM for translation + local Ollama running `qwen2.5-vl:72b` for vision (vision is the slot that benefits most from a strong specialized model).
+
+### STT backend choice
+
+Two backends, in Settings → Speech-to-Text → Backend:
+
+- **`cpu`** — `faster-whisper` with INT8 quantization. Works on any host. ~20–60 min for a 2h film on small/medium model.
+- **`openvino`** — Whisper exported to OpenVINO IR, runs on Intel iGPU. 5–10× faster than CPU on N305-class hardware. Requires the openvino-flavored image with `/dev/dri` exposed.
+
+The openvino device picker is hidden — defaulted to `AUTO` which picks GPU when available and falls back to CPU. Power users can override via `BABEL_OPENVINO_DEVICE`.
+
+### Custom CA bundle for self-signed media-server TLS
+
+If your media server has a self-signed certificate but you want to keep verification on (e.g. you have your own CA):
+
+1. Mount the CA into the container: `- /path/to/ca.crt:/cache/my-ca.crt:ro`
+2. Set `SSL_CERT_FILE=/cache/my-ca.crt` in the env. httpx picks it up automatically.
+
+The "Verify SSL certificate" toggle stays on. This is the recommended path over the toggle-off-on-trusted-LAN approach.
+
+### Untagged audio language detection + write-back
+
+When ffprobe reports a track without a language tag (e.g. Emby just shows "Audio"), Subtitle This runs a `faster-whisper-tiny` pre-pass on the first 30s of audio (~75 MB model cached on first use, ~2-3s per job). The detected language drives transcription so NLLB and DeepL get the right `source_lang`.
+
+**The detected language is also written back into the source file's audio-stream metadata** via `mkvpropedit` so the media server reads the right language on next probe. Restricted to MKV/MKA/WebM — `mkvpropedit` edits ONLY the EBML header, never touches audio data, no risk of audio damage. Disabled via Settings → Defaults → *Tag detected source language back into the source file*.
+
+Non-Matroska containers (MP4 / MOV / AVI / …) are deliberately left untouched: an `ffmpeg -c copy` remux would technically preserve audio byte-for-byte but rewrites the whole file with documented edge cases (timestamp re-derivation, lost custom metadata) — not worth the risk on a media library.
+
+---
+
+## Power-user knobs (env vars)
+
+All configurable from the Settings UI; these env vars only matter for declarative deployments (TrueNAS Custom App YAML, GitOps, etc.).
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `BABEL_MEDIA_SERVER_TYPE` | `emby` | `emby` / `jellyfin` / `plex` |
+| `BABEL_MEDIA_SERVER_URL` | (unset) | Server base URL |
+| `BABEL_MEDIA_SERVER_API_KEY` | (unset) | Emby/Jellyfin API key, or X-Plex-Token for Plex |
+| `BABEL_MEDIA_SERVER_VERIFY_SSL` | `true` | Disable for Plex via LAN IP or self-signed certs |
+| `BABEL_WHISPER_BACKEND` | `cpu` | `cpu` / `openvino` (the openvino image sets this to `openvino`) |
+| `BABEL_WHISPER_MODEL` | `small` | `tiny` / `base` / `small` / `medium` / `large-v3` / `large-v3-turbo` |
+| `BABEL_OPENVINO_DEVICE` | `AUTO` | `AUTO` / `GPU` / `CPU` (UI doesn't expose this; AUTO is right) |
+| `BABEL_DEFAULT_TRANSLATION_PROVIDER` | `nllb` | `nllb` / `deepl` / `llm` |
+| `BABEL_DEFAULT_TARGET_LANG` | `fr` | ISO 639-1 |
+| `BABEL_DEFAULT_MODE` | `audio` | `audio` / `scene` / `cinematic` |
+| `BABEL_DEFAULT_SOURCE_LANG_PRIORITY` | `["en","*"]` | UI-hidden niche knob |
+| `BABEL_NLLB_MODEL` | `facebook/nllb-200-distilled-600M` | NLLB variant |
+| `BABEL_TRANSLATION_LLM_TYPE` | `anthropic` | `anthropic` / `openai_compat` |
+| `BABEL_TRANSLATION_LLM_MODEL` | `claude-opus-4-7` | Translator model id |
+| `BABEL_TRANSLATION_LLM_ENDPOINT` | `https://api.openai.com/v1` | Endpoint when type=openai_compat |
+| `BABEL_TRANSLATION_LLM_API_KEY` | (unset) | |
+| `BABEL_TRANSLATION_LLM_SUPPORTS_VISION` | `true` | Required for cinematic mode |
+| `BABEL_VISION_LLM_TYPE` | `anthropic` | `anthropic` / `openai_compat` |
+| `BABEL_VISION_LLM_MODEL` | `claude-opus-4-7` | Scene-describer model |
+| `BABEL_VISION_LLM_ENDPOINT` | `https://api.openai.com/v1` | |
+| `BABEL_VISION_LLM_API_KEY` | (unset) | |
+| `BABEL_VISION_LLM_ENABLED` | `true` | Master switch for scene/cinematic |
+| `BABEL_DEEPL_API_KEY` | (unset) | Free-tier keys end in `:fx` (auto-detected) |
+| `BABEL_SCENE_DETECTION_THRESHOLD` | `0.4` | ffmpeg threshold (0–1, lower = more scenes) |
+| `BABEL_SCENE_MIN_LENGTH_SECONDS` | `1.5` | Skip shorter shots |
+| `BABEL_SCENE_MAX_SCENES` | `500` | Hard cap |
+| `BABEL_SCENE_KEYFRAME_POSITION` | `midpoint` | `start` / `midpoint` / `end` |
+| `BABEL_SCENE_FRAME_MAX_SIZE` | `1024` | Long-edge px sent to vision LLM |
+| `BABEL_SCENE_BIBLE_BATCH_SIZE` | `10` | Scenes per vision-LLM call |
+| `BABEL_CINEMATIC_FRAME_MAX_SIZE` | `768` | Long-edge px for per-cue frames |
+| `BABEL_CINEMATIC_BATCH_SIZE` | `10` | Cues per LLM call in cinematic mode |
+| `BABEL_TRANSLATION_BATCH_SIZE` | `30` | Cues per LLM call in text-only mode |
+| `BABEL_DEFAULT_SKIP_IF_TARGET_AUDIO_EXISTS` | `true` | Skip when target-lang audio already in file |
+| `BABEL_WRITE_DETECTED_LANGUAGE_TO_FILE` | `true` | MKV-only language tag write-back |
+| `BABEL_MAX_LINE_CHARS` | `42` | Subtitle line wrap |
+| `BABEL_MAX_LINES_PER_CUE` | `2` | Max display lines per cue |
+| `BABEL_CACHE_DIR` | `/cache` | Cache directory |
 
 ## Tests
 
@@ -408,78 +288,62 @@ pip install -e .[dev]
 pytest
 ```
 
-Tests across pure-logic surface (language normalization, VTT formatting, track selection, scene mapping, settings store with migration, batching, Emby/Jellyfin item parsing, Plex payload translation, cache key invalidation when LLM model changes) plus FastAPI smoke tests for every route. Heavy externals (ffmpeg, Whisper, LLM/server APIs) are stubbed — the suite runs in ~1s.
-
-```
-tests/
-├── conftest.py                test env + per-test isolation
-├── test_lang.py               ISO 639-1/2 normalization
-├── test_vtt.py                Timestamp formatting + line wrapping
-├── test_cache.py              Fingerprint, key, JSON-error handling, LLM-model invalidation
-├── test_config.py             SettingsStore + the legacy → per-function migration
-├── test_scenes.py             Cue → scene mapping, keyframe positioning
-├── test_tracks.py             Track-selection policy
-├── test_translate_util.py     batches() helper
-├── test_emby_jellyfin_client.py   MediaItem.has_subtitle_track, payload→neutral conversion
-├── test_plex_client.py        Plex payload translation, section discovery, mocked HTTP
-├── test_jobs.py               Job dataclass, eviction, missing-loop guard
-├── test_processor.py          Mode validation gates
-├── test_track_metadata.py     Language tag write-back (MKV-only via mkvpropedit)
-└── test_smoke_api.py          /health, /api/settings, /api/jobs, /api/process,
-                               /api/batch, dashboards, library, partials,
-                               plus regression tests confirming /webhook/emby,
-                               /transcribe-translate, AND /api/sweep are absent (404)
-```
+166 tests covering pure-logic (language normalization, VTT formatting, track selection, scene mapping, settings store with migrations, batching, cache key invalidation, two-level cache fingerprint, Emby/Jellyfin payload parsing, Plex API translation, LLM translation provider edge cases, UI form coercion) plus FastAPI smoke tests for every route. Heavy externals (ffmpeg, Whisper, LLM/server APIs) are stubbed — the suite runs in ~1s.
 
 ## Layout
 
 ```
 subtitle-this/
-├── .github/workflows/publish.yml   GHCR multi-flavor image publish
-├── .env.example                    Optional first-boot defaults (UI overrides everything)
+├── .github/workflows/publish.yml   GHCR multi-flavor image publish + retention
+├── .env.example
 ├── docker-compose.yml
 ├── Dockerfile                      CPU image (faster-whisper)
-├── Dockerfile.openvino             Intel iGPU image (OpenVINO + optimum-intel)
+├── Dockerfile.openvino             Intel iGPU image
 ├── pyproject.toml
 ├── README.md
+├── CHANGELOG.md
 └── app/
-    ├── main.py                     FastAPI entry, registers all routers
-    ├── config.py                   Layered settings (env + persisted JSON)
-    ├── cache.py                    File-fingerprint transcript cache
-    ├── jobs.py                     In-memory job queue (single-worker async)
-    ├── processor.py                Pipeline orchestrator (called from API + UI)
+    ├── main.py                     FastAPI entry
+    ├── config.py                   Layered settings + migrations
+    ├── cache.py                    Two-level fingerprint transcript cache
+    ├── jobs.py                     In-memory job queue
+    ├── processor.py                Pipeline orchestrator
     ├── api/
-    │   ├── manage.py               Media-server-driven endpoints (back the UI buttons)
+    │   ├── manage.py               Server-driven endpoints
     │   └── settings_api.py         GET/PATCH /api/settings
     ├── server/
-    │   ├── base.py                 MediaServerClient ABC + neutral MediaItem/MediaPage/MediaStream
-    │   ├── emby_jellyfin.py        Shared client for Emby and Jellyfin (X-Emby-Token)
-    │   └── plex.py                 Plex client (X-Plex-Token, /library/sections + /library/metadata)
+    │   ├── base.py                 MediaServerClient ABC + neutral dataclasses
+    │   ├── emby_jellyfin.py        Shared Emby/Jellyfin client
+    │   └── plex.py                 Plex client
     ├── ui/
-    │   └── routes.py               HTML routes (dashboard, library, settings)
+    │   └── routes.py               HTML routes + _FIELD_META + _SECTION_SHOW_IF
     ├── templates/
     │   ├── base.html
     │   ├── dashboard.html
     │   ├── library.html
     │   └── settings.html
     └── pipeline/
-        ├── tracks.py               ffprobe + audio track selection
-        ├── audio.py                ffmpeg audio extraction
-        ├── lang.py                 ISO 639-2 → 639-1 normalization
-        ├── stt.py                  STT backend dispatcher
+        ├── tracks.py
+        ├── audio.py
+        ├── lang.py                 Language code normalization + dropdown options
+        ├── lang_detect.py          faster-whisper-tiny pre-pass for untagged tracks
+        ├── track_metadata.py       MKV-only language tag write-back
+        ├── stt.py
         ├── stt_faster_whisper.py
         ├── stt_openvino.py
-        ├── scenes.py               ffmpeg scene-detection + cue mapping (scene/cinematic)
-        ├── frames.py               In-memory ffmpeg keyframe extraction
-        ├── scene_bible.py          LLM-vision scene-bible builder + cache
-        ├── vtt.py                  WebVTT formatter
+        ├── scenes.py
+        ├── frames.py
+        ├── scene_bible.py
+        ├── vtt.py
         ├── llm/
-        │   ├── base.py             LLMClient protocol + content blocks
-        │   ├── anthropic.py        Anthropic-native (caching, thinking, schema)
-        │   └── openai_compat.py    OpenAI-Chat-Completions compatible (OpenAI/Ollama/etc.)
+        │   ├── base.py
+        │   ├── anthropic.py
+        │   └── openai_compat.py
         └── translate/
-            ├── base.py             Provider protocol + TranslationContext
-            ├── llm.py              LLM-backed translator (uses the configured backend)
-            ├── deepl.py            DeepL (httpx, text-only — context ignored)
-            └── nllb.py             NLLB-200 — OpenVINO-accelerated when available, CPU torch fallback otherwise
+            ├── base.py
+            ├── llm.py
+            ├── deepl.py
+            └── nllb.py
 ```
+
+See [CHANGELOG.md](CHANGELOG.md) for the full version history.

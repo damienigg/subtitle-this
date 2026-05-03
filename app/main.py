@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
 # The endpoints registered below back the per-item "Subtitle this" button
 # and the multi-select batch flow on the Library page, plus the auto-
 # refreshing jobs list — they're not meant as a public CLI surface.
-app = FastAPI(title="Subtitle This", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Subtitle This", version="0.4.0", lifespan=lifespan)
 
 
 @app.get("/health")
