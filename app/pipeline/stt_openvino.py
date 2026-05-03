@@ -133,22 +133,39 @@ def transcribe(
     cues: list[Cue] = []
     next_id = 0
 
+    # The portable way to force language + task across transformers /
+    # optimum-intel versions is forced_decoder_ids built by the processor,
+    # NOT passing language=/task= as generate() kwargs (which are sometimes
+    # rejected by OVModel.generate() depending on the optimum-intel build).
+    # When language_hint is None, we leave forced_decoder_ids unset so
+    # Whisper auto-detects each chunk.
     generate_kwargs: dict = {"return_timestamps": True}
     if language_hint:
-        # When the language is known, force it so Whisper doesn't try to
-        # auto-detect on each 30s chunk (which would waste a generated token
-        # AND occasionally pick wrong on quiet/silent windows).
-        generate_kwargs["language"] = language_hint
-        generate_kwargs["task"] = "transcribe"
+        try:
+            forced = processor.get_decoder_prompt_ids(
+                language=language_hint, task="transcribe", no_timestamps=False,
+            )
+            generate_kwargs["forced_decoder_ids"] = forced
+        except Exception as e:
+            # If the processor rejects the language code (rare), let Whisper
+            # auto-detect rather than failing the whole job. Log so we know.
+            _log.warning(
+                "could not build forced_decoder_ids for language=%r (%s); "
+                "letting Whisper auto-detect", language_hint, e,
+            )
 
     for i in range(n_chunks):
         check_cancel()
         start_sample = i * _CHUNK_SAMPLES
         end_sample = min(len(audio), start_sample + _CHUNK_SAMPLES)
         chunk = audio[start_sample:end_sample]
-        # Whisper's mel feature extractor expects exactly 30s of audio.
-        # Pad the final partial chunk with zeros (silence). Whisper handles
-        # silence cleanly — emits no segments.
+        # Whisper's mel feature extractor expects exactly 30s of audio AND
+        # float32 dtype (soundfile returns float64 by default for WAV PCM,
+        # which the feature extractor accepts but downstream OpenVINO ops
+        # are strictly fp32). Cast eagerly + pad short final chunk with
+        # zeros (silence — Whisper emits no segments for it).
+        if chunk.dtype != np.float32:
+            chunk = chunk.astype(np.float32)
         if len(chunk) < _CHUNK_SAMPLES:
             chunk = np.pad(chunk, (0, _CHUNK_SAMPLES - len(chunk)))
 
