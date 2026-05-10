@@ -5,6 +5,7 @@ import asyncio
 import logging
 import time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -189,10 +190,17 @@ def submit_item_job(
 
         try:
             server.refresh_item(item_id)
-        except MediaServerError:
+        except MediaServerError as e:
             # The .vtt is on disk; refresh failure is non-fatal — the server
-            # will pick it up on the next library scan regardless.
-            pass
+            # will pick it up on the next library scan regardless. Log at
+            # WARNING so operators debugging "why didn't Emby pick up my
+            # new subtitle" can see this in `docker logs` rather than
+            # having to guess.
+            _log.warning(
+                "media-server refresh for item %s failed (subtitle is still "
+                "on disk; server will pick it up on the next library scan): %s",
+                item_id, e,
+            )
 
     return jobs.submit(
         item_id=item.id,
@@ -275,14 +283,21 @@ def list_items(
 def process_item(
     item_id: str,
     target_lang: str | None = None,
-    translation_provider: str | None = None,
-    mode: str | None = None,
+    translation_provider: Literal["nllb", "deepl", "llm"] | None = None,
+    mode: Literal["audio", "scene", "cinematic"] | None = None,
     skip_if_target_audio_exists: bool | None = None,
 ) -> JobView:
     """Queue a translation job for a media-server item. All optional params
     override the corresponding default from Settings; omitting them uses the
     configured defaults. Query-param-based so HTMX's default form-POST works
-    directly."""
+    directly.
+
+    `mode` and `translation_provider` are Literal-typed so FastAPI rejects
+    garbage values at schema validation (422 with a helpful enum list)
+    rather than letting them propagate into the pipeline where they'd
+    surface as a less-readable BadRequest. target_lang stays a free string
+    — coverage varies per provider (NLLB ~30 langs, DeepL ~30, LLMs
+    arbitrary), so pinning it to a Literal would be the wrong cut."""
     try:
         server = media_server_client()
         item = server.get_item(item_id)

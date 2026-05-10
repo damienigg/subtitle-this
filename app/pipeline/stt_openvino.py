@@ -126,9 +126,16 @@ def _parse_segments(decoded: str, time_offset_s: float) -> list[tuple[float, flo
     `time_offset_s` is added to every timestamp so chunked-mode callers
     (every 30s window) can produce globally-correct timestamps without
     re-walking the output.
+
+    Defensive note: Whisper occasionally emits non-monotonic timestamps
+    on heavy hallucination (end < start, or duplicated markers). We
+    silently drop those pairs to keep the cue list well-formed, but log
+    a debug-level counter on the module logger so regressions are
+    visible in `docker logs` without spamming for the common no-drop case.
     """
     markers = list(re.finditer(r"<\|(\d+\.\d+)\|>", decoded))
     out: list[tuple[float, float, str]] = []
+    dropped = 0
     for i in range(len(markers) - 1):
         m1, m2 = markers[i], markers[i + 1]
         start = float(m1.group(1)) + time_offset_s
@@ -136,6 +143,16 @@ def _parse_segments(decoded: str, time_offset_s: float) -> list[tuple[float, flo
         text = decoded[m1.end():m2.start()].strip()
         if text and end > start:
             out.append((start, end, text))
+        elif text:
+            # We have text but the timing is degenerate — log it so a
+            # regression that turns half the cues into degenerates is
+            # visible rather than silently halving the output.
+            dropped += 1
+    if dropped:
+        _log.debug(
+            "_parse_segments dropped %d cue(s) with degenerate timestamps "
+            "at offset=%.1fs (text present, end<=start)", dropped, time_offset_s,
+        )
     return out
 
 

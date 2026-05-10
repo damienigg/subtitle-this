@@ -182,6 +182,20 @@ class LLMTranslationProvider:
                 f"Length mismatch: expected {len(batch)} cues, got {len(translations)}"
             )
 
+        # Detect duplicate ids before dict-deduplication silently drops one
+        # of them. The previous `{t["id"]: t["text"] for t in translations}`
+        # would happily accept `[{id:0, ...}, {id:0, ...}, {id:1, ...}]` for
+        # a 3-cue batch — losing cue 2's translation under cue 0's text.
+        # Length check above catches the wrong-count case; this catches the
+        # right-count-wrong-distinct case.
+        ids_seen = [t["id"] for t in translations]
+        if len(set(ids_seen)) != len(ids_seen):
+            duplicates = sorted({i for i in ids_seen if ids_seen.count(i) > 1})
+            raise TranslationError(
+                f"Duplicate cue id(s) {duplicates} in translation response — "
+                f"model dropped or duplicated cues"
+            )
+
         by_id = {t["id"]: t["text"] for t in translations}
         out: list[Cue] = []
         for c in batch:

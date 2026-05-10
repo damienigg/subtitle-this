@@ -64,8 +64,14 @@ def detect(wav_path: Path) -> str | None:
             condition_on_previous_text=False,
             vad_filter=True,
         )
-        # Force the generator far enough that faster-whisper has finalized
-        # info.language regardless of internal lazy evaluation.
+        # faster-whisper's `segments` is a lazy generator — Whisper's
+        # language detection runs on the FIRST decoder step, so we only
+        # need to advance the iterator once for `info.language` to be
+        # populated. We don't need (and would pay for) draining it.
+        # On a completely silent sample the generator yields zero
+        # segments and info.language stays as Whisper's pre-detection
+        # default — the final `info.language or None` returns None in
+        # that case, which is the correct signal to upstream.
         next(iter(segments), None)
     except Exception:
         return None

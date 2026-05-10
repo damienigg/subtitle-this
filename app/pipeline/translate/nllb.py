@@ -40,7 +40,6 @@ _FLORES = {
     "ms": "zsm_Latn", "tl": "tgl_Latn", "ca": "cat_Latn", "bn": "ben_Beng",
 }
 
-_BATCH = 16
 _MAX_LEN = 256
 
 
@@ -138,9 +137,10 @@ class NLLBProvider:
 
             out: list[Cue] = []
             total = max(1, len(cues))
-            for i in range(0, len(cues), _BATCH):
+            batch_size = max(1, int(settings.nllb_batch_size or 16))
+            for i in range(0, len(cues), batch_size):
                 check_cancel()
-                batch = cues[i:i + _BATCH]
+                batch = cues[i:i + batch_size]
                 inputs = tokenizer(
                     [c.text for c in batch],
                     return_tensors="pt",

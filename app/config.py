@@ -41,8 +41,13 @@ class _EnvSettings(BaseSettings):
     # in silent regions because direct OVModel.generate() bypasses Whisper's
     # built-in no-speech / log-prob guards. Net runtime is also faster (skips
     # 30–50% of audio in a typical film). Off only as an escape hatch for
-    # very-quiet-but-real-speech files where Silero may be too strict; the
-    # CPU/faster-whisper backend has its own VAD and ignores this flag.
+    # very-quiet-but-real-speech files where Silero may be too strict.
+    #
+    # This flag is openvino-only: the CPU/faster-whisper backend runs its
+    # own internal VAD (always-on `vad_filter=True` in the .transcribe call)
+    # which is unrelated to Silero, so toggling this setting has no effect
+    # there. The cache key reflects that — vad_enabled is included in the
+    # key only when whisper_backend=openvino.
     vad_enabled: bool = True
 
     # ── Translation LLM ───────────────────────────────────────────────────────
@@ -66,6 +71,13 @@ class _EnvSettings(BaseSettings):
     # Other translation providers
     deepl_api_key: str | None = None
     nllb_model: str = "facebook/nllb-200-distilled-600M"
+    # Cues per generate() call for NLLB. 16 is balanced for distilled-600M
+    # on most hardware; the bigger NLLB variants benefit from smaller batches
+    # to stay under iGPU activation memory.
+    nllb_batch_size: int = Field(16, ge=1, le=128)
+    # Cues per DeepL API request. 50 is the documented DeepL maximum;
+    # raising it has no effect, lowering it makes more (smaller) calls.
+    deepl_batch_size: int = Field(50, ge=1, le=50)
     translation_batch_size: int = Field(30, ge=1, le=200)
 
     # Audio segmentation for the OpenVINO STT path. Splits the extracted WAV
@@ -141,6 +153,17 @@ class _EnvSettings(BaseSettings):
     # because each call ships up to N images.
     cinematic_frame_max_size: int = Field(768, ge=128, le=2048)
     cinematic_batch_size: int = Field(10, ge=1, le=50)
+    # Frame-accurate seek for per-cue extraction. False (default) = fast
+    # input-seek which snaps to the nearest keyframe; on a typical film
+    # with a ~2 s keyframe interval, the extracted JPEG can be up to a
+    # couple seconds off from the cue's actual midpoint. Acceptable for
+    # most use cases (and 5-10× faster). True = combined seek:
+    # `-ss <ts-5> -i <file> -ss 5 -frames:v 1` — fast input seek to ~5s
+    # before, then accurate output seek of 5s. Frame-accurate at the
+    # cost of decoding the intervening ~5s per cue. Recommended only
+    # when extracted frames will be used for fine-grained visual
+    # disambiguation (e.g. lip-sync verification, on-screen text OCR).
+    cinematic_frame_accurate_seek: bool = False
     # Hard cap on how many cues get a per-cue frame attached. A 2h+ film with
     # heavy dialog can generate 1500+ cues — pre-extracting one JPEG per cue
     # and holding them all in RAM (plus base64 inflation per request) is what

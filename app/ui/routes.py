@@ -3,7 +3,9 @@
 Only HTML lives here; data routes live in app/api/*. The settings form posts
 to /api/settings (PATCH) via HTMX, then re-renders the whole settings panel.
 """
-from typing import Any, get_type_hints
+import types
+import typing
+from typing import Any, get_args, get_origin, get_type_hints
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -374,17 +376,22 @@ _FIELD_META: list[dict[str, Any]] = [
              "compute on items where the user can just switch audio track in their player."},
     {"key": "write_detected_language_to_file", "section": "Defaults",
      "label": "Tag detected source language back into the source file (MKV only)", "type": "checkbox",
-     "help": "When a film's audio track has no language tag (Emby just shows 'Audio') we "
-             "always run a Whisper-tiny pre-pass to detect the language for the transcription "
-             "itself. With this checkbox ON, we ALSO write that language back into the file's "
-             "EBML header via `mkvpropedit` — instant, modifies only metadata, NEVER touches "
-             "the audio/video data sections. Restricted to MKV/MKA/WebM. Non-Matroska "
-             "containers (MP4/MOV/AVI/...) are deliberately left untouched: an ffmpeg remux "
-             "would technically preserve audio byte-for-byte but rewrites the whole file with "
-             "documented edge cases (timestamp re-derivation, lost custom metadata) — not "
-             "worth the risk on a media library. Detection still drives transcription "
-             "correctness regardless of container; only the persist-to-Emby step is skipped "
-             "for non-MKV. Turn off entirely to keep all source files completely pristine."},
+     "help": "When a film's audio track has no language tag (Emby just shows 'Audio'), "
+             "language detection runs differently per backend: the OpenVINO STT backend "
+             "needs a Whisper-tiny pre-pass on the first 30s of audio (it can't surface "
+             "its own auto-detection through the optimum-intel API), while the CPU/"
+             "faster-whisper backend detects internally during the main transcribe call "
+             "at zero extra cost. Either way the transcription gets the right language. "
+             "With this checkbox ON, we ALSO write the detected language back into the "
+             "file's EBML header via `mkvpropedit` — instant, modifies only metadata, "
+             "NEVER touches the audio/video data sections. Restricted to MKV/MKA/WebM. "
+             "Non-Matroska containers (MP4/MOV/AVI/...) are deliberately left untouched: "
+             "an ffmpeg remux would technically preserve audio byte-for-byte but rewrites "
+             "the whole file with documented edge cases (timestamp re-derivation, lost "
+             "custom metadata) — not worth the risk on a media library. Detection still "
+             "drives transcription correctness regardless of container; only the persist-"
+             "to-Emby step is skipped for non-MKV. Turn off entirely to keep all source "
+             "files completely pristine."},
 
     # ── Translation (provider-agnostic params) ────────────────────────────────
     {"key": "nllb_model", "section": "Translation",
@@ -407,6 +414,18 @@ _FIELD_META: list[dict[str, Any]] = [
      "show_if": {"field": "default_translation_provider", "equals": "llm"},
      "help": "Only used when provider=LLM. Higher = fewer round-trips, lower = more granular "
              "failures and retries. 30 is a good balance."},
+    {"key": "nllb_batch_size", "section": "Translation",
+     "label": "Cues per NLLB batch", "type": "number",
+     "show_if": {"field": "default_translation_provider", "equals": "nllb"},
+     "help": "Only used when provider=NLLB. Higher = fewer model.generate() calls, "
+             "lower = less peak iGPU/CPU memory per call. 16 is the documented "
+             "balanced default; drop to 8 if you switched to NLLB-1.3B or 3.3B."},
+    {"key": "deepl_batch_size", "section": "Translation",
+     "label": "Cues per DeepL request", "type": "number",
+     "show_if": {"field": "default_translation_provider", "equals": "deepl"},
+     "help": "Only used when provider=DeepL. DeepL caps a single request at 50 "
+             "texts, so this is also the upper bound. Lower it for more granular "
+             "retry behavior at the cost of more round-trips."},
 
     # ── Translation model (only used when provider=llm) ───────────────────────
     {"key": "translation_llm_type", "section": "Translation model",
@@ -577,19 +596,52 @@ for _f in _FIELD_META:
         _f["show_if"] = _normalize_show_if(_f["show_if"])
 
 
-def _coerce(key: str, raw: str) -> Any:
-    """Coerce a form-submitted string to the type pydantic expects on the env model."""
-    hints = get_type_hints(_EnvSettings)
-    target = hints.get(key, str)
-    target_str = str(target)
+def _unwrap_optional(target: Any) -> Any:
+    """Strip Optional[X] / X | None down to X. Used by _coerce so an
+    `int | None` field still coerces to int. Returns the bare type when
+    the annotation is `X | None`, otherwise returns it unchanged."""
+    origin = get_origin(target)
+    # Both typing.Union[X, None] and the PEP 604 `X | None` form report as
+    # Union under get_origin — the second one returns types.UnionType in
+    # Python 3.10+, the first returns typing.Union. Either way, get_args
+    # gives us the members.
+    if origin is typing.Union or origin is types.UnionType:
+        non_none = [a for a in get_args(target) if a is not type(None)]
+        if len(non_none) == 1:
+            return non_none[0]
+    return target
 
-    if target is bool or "bool" in target_str:
+
+def _coerce(key: str, raw: str) -> Any:
+    """Coerce a form-submitted string to the type pydantic expects on the env model.
+
+    Uses `typing.get_origin` / `get_args` to inspect the annotation rather
+    than substring-matching against `str(target)`. The previous
+    `"bool" in str(target)` approach worked for the current field set but
+    would silently mis-dispatch any future annotation that mentions "bool"
+    in a non-bool position (e.g. a `Literal["bool"]` field). The principled
+    inspection drops that footgun.
+
+    Empty number fields coerce to 0 / 0.0 rather than raising — matches the
+    UX expectation that clearing a number input means "use the default-ish
+    value" (pydantic's Field bounds catch the edge cases where 0 is out
+    of range).
+    """
+    hints = get_type_hints(_EnvSettings)
+    target = _unwrap_optional(hints.get(key, str))
+    origin = get_origin(target)
+
+    # `bool` check has to come before `int` because `isinstance(True, int)`
+    # is True and `bool` is a subclass of `int` in Python.
+    if target is bool:
         return raw in ("on", "true", "True", "1", "yes")
-    if target is int or "int" in target_str:
+    if target is int:
         return int(raw) if raw != "" else 0
-    if target is float or "float" in target_str:
+    if target is float:
         return float(raw) if raw != "" else 0.0
-    if "list" in target_str:
+    # `list[str]` / `tuple[str, ...]` / etc. — anything with a list-like
+    # origin gets split on commas.
+    if origin in (list, tuple, set, frozenset):
         return [s.strip() for s in raw.split(",") if s.strip()]
     return raw
 

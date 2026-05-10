@@ -328,7 +328,10 @@ All configurable from the Settings UI; these env vars only matter for declarativ
 | `BABEL_SCENE_BIBLE_BATCH_SIZE` | `10` | Scenes per vision-LLM call |
 | `BABEL_CINEMATIC_FRAME_MAX_SIZE` | `768` | Long-edge px for per-cue frames |
 | `BABEL_CINEMATIC_BATCH_SIZE` | `10` | Cues per LLM call in cinematic mode |
+| `BABEL_CINEMATIC_FRAME_ACCURATE_SEEK` | `false` | Slower but frame-accurate seek for per-cue frames |
 | `BABEL_TRANSLATION_BATCH_SIZE` | `30` | Cues per LLM call in text-only mode |
+| `BABEL_NLLB_BATCH_SIZE` | `16` | Cues per NLLB generate() call |
+| `BABEL_DEEPL_BATCH_SIZE` | `50` | Cues per DeepL request (capped at 50 by the API) |
 | `BABEL_DEFAULT_SKIP_IF_TARGET_AUDIO_EXISTS` | `true` | Skip when target-lang audio already in file |
 | `BABEL_WRITE_DETECTED_LANGUAGE_TO_FILE` | `true` | MKV-only language tag write-back |
 | `BABEL_MAX_LINE_CHARS` | `42` | Subtitle line wrap |
@@ -346,7 +349,7 @@ pip install -e .[dev]
 pytest
 ```
 
-224 tests covering pure-logic (language normalization, VTT formatting, track selection, scene mapping, settings store with migrations + atomic writes + corrupt-file recovery, batching, cache key invalidation, two-level cache fingerprint, Emby/Jellyfin payload parsing, Plex API translation, LLM translation provider edge cases including lazy cinematic-frame plumbing, UI form coercion, job deadline enforcement) plus FastAPI smoke tests for every route and the auth + same-origin middleware. Heavy externals (ffmpeg, Whisper, LLM/server APIs) are stubbed — the suite runs in ~5s.
+235 tests covering pure-logic (language normalization, VTT formatting, track selection, scene mapping, settings store with migrations + atomic writes + corrupt-file recovery, batching, cache key invalidation, two-level cache fingerprint, Emby/Jellyfin payload parsing, Plex API translation, LLM translation provider edge cases including lazy cinematic-frame plumbing, UI form coercion, job deadline enforcement) plus FastAPI smoke tests for every route and the auth + same-origin middleware. Heavy externals (ffmpeg, Whisper, LLM/server APIs) are stubbed — the suite runs in ~5s.
 
 ## Layout
 

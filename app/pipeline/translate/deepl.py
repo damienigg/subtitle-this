@@ -12,8 +12,10 @@ def _noop_progress(frac: float) -> None: ...
 def _noop_cancel() -> None: ...
 
 
-# DeepL request constants
-_DEEPL_BATCH = 50          # max texts per request
+# DeepL request constants. Per the DeepL API docs, a single /v2/translate
+# call accepts up to 50 `text=` fields; the batch size is configurable via
+# settings.deepl_batch_size for users who want smaller batches (more
+# granular retry behavior at the cost of more round-trips).
 _DEEPL_TIMEOUT = 60.0      # seconds
 
 # ISO 639-1 -> DeepL language code. DeepL uses uppercase ISO 639-1, with a
@@ -63,7 +65,8 @@ class DeepLProvider:
 
         out: list[Cue] = []
         total = max(1, len(cues))
-        for batch in batches(cues, _DEEPL_BATCH):
+        batch_size = max(1, min(50, int(settings.deepl_batch_size or 50)))
+        for batch in batches(cues, batch_size):
             check_cancel()
             out.extend(self._translate_batch(batch, source_lang, target_lang))
             progress(len(out) / total)

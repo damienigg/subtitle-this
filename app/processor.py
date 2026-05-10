@@ -426,23 +426,24 @@ def _build_context(
             cue_ids_with_frames = {c.id for c in cues[:cap]}
             media_path = req.media_path
             frame_max = settings.cinematic_frame_max_size
+            accurate = bool(settings.cinematic_frame_accurate_seek)
+            # Build a cue.id → cue index for O(1) lookup in the provider.
+            # The provider fires once per (cue.id, batch) — without the
+            # index we'd O(N) scan `cues` for every frame; on a 1500-cue
+            # film with a 10-cue batch size that's 1500×10 = 15k scans.
+            cue_by_id = {c.id: c for c in cues}
 
             def _extract_one(cue_id: int) -> bytes | None:
-                # Linear scan is fine: caps are ≤ a few thousand and this
-                # only fires per-batch (≤cinematic_batch_size times).
-                # Translators check check_cancel between batches, so a
-                # cancel here takes effect quickly even on huge films.
-                for c in cues:
-                    if c.id != cue_id:
-                        continue
-                    ts = (c.start + c.end) / 2.0
-                    try:
-                        return frames.extract_frame_bytes(
-                            media_path, ts, frame_max,
-                        )
-                    except subprocess.CalledProcessError:
-                        return None   # one missing frame doesn't doom the job
-                return None
+                c = cue_by_id.get(cue_id)
+                if c is None:
+                    return None
+                ts = (c.start + c.end) / 2.0
+                try:
+                    return frames.extract_frame_bytes(
+                        media_path, ts, frame_max, accurate=accurate,
+                    )
+                except subprocess.CalledProcessError:
+                    return None   # one missing frame doesn't doom the job
 
             cue_frames_provider = _extract_one
 

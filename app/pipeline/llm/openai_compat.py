@@ -1,6 +1,16 @@
 """OpenAI-compatible LLM client. Works with OpenAI proper, Ollama, LocalAI,
 OpenRouter, Together, Groq, Gemini's OpenAI-compat endpoint, vLLM, llama.cpp's
-http server, and LM Studio — anyone who speaks Chat Completions."""
+http server, and LM Studio — anyone who speaks Chat Completions.
+
+Wire-format note: we send user content as a list of typed-dict parts
+(`[{"type":"text", ...}, {"type":"image_url", ...}]`), which is the
+documented OpenAI shape and is supported by every actively-maintained
+OpenAI-compat server we test against (Ollama 0.5+, LM Studio 0.3+,
+LocalAI 2.x, vLLM, OpenRouter, OpenAI proper). Very old llama.cpp HTTP
+servers (pre-2024) and ancient Ollama (<0.4) only accepted a plain
+string for `content` — if you hit a "messages.X.content: must be a
+string" error from such a backend, upgrade the backend rather than
+patching this client; the API has settled on the typed-list form."""
 import base64
 import json
 

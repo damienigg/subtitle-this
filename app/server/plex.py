@@ -34,6 +34,7 @@ and sometimes `languageTag` (BCP 47); we feed whichever is present to
 lang.normalize() so MediaItem.has_subtitle_track works identically for
 Emby/Jellyfin and Plex.
 """
+import threading
 from typing import Any
 
 import httpx
@@ -46,6 +47,24 @@ from app.server.base import (
     MediaServerError,
     MediaStream,
 )
+
+
+# Module-level cache for the list of video-bearing sections, keyed by
+# (base_url, token). PlexClient is constructed fresh per request in
+# manage.py:media_server_client(), so a per-instance cache (which the
+# previous implementation had) was always cold. The section list is
+# small (a handful of entries) and rarely changes — caching at module
+# scope means subsequent requests skip the /library/sections roundtrip.
+# Lock guards the dict against concurrent first-time-write races.
+_VIDEO_SECTIONS_CACHE: dict[tuple[str, str], list[tuple[str, int]]] = {}
+_VIDEO_SECTIONS_LOCK = threading.Lock()
+
+
+def _clear_video_sections_cache() -> None:
+    """Test hook — drop the module cache so tests get fresh /library/sections
+    behavior. Production code never calls this."""
+    with _VIDEO_SECTIONS_LOCK:
+        _VIDEO_SECTIONS_CACHE.clear()
 
 
 # Plex content type codes (from the official API enum).
@@ -86,9 +105,9 @@ class PlexClient(MediaServerClient):
             timeout=30.0,
             verify=verify_ssl,
         )
-        # Cached after first discovery — Plex section list is small and stable.
-        # Each entry is (section_key, video_type_code) — see _video_sections.
-        self._video_sections_cache: list[tuple[str, int]] | None = None
+        # Token serves as the cache key alongside base_url so different
+        # users hitting different Plex servers don't share section lists.
+        self._token = token
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -168,24 +187,36 @@ class PlexClient(MediaServerClient):
             )
             if type_code is None:
                 return MediaPage(items=[], total=0)
-            page = self._section_page(
+            # Pass start_index / limit straight through to Plex's
+            # X-Plex-Container-Start / X-Plex-Container-Size headers so
+            # the SERVER does the pagination, not us. Previously we
+            # fetched 10 000 items per page render and sliced in Python
+            # — fine for small libraries, catastrophic for a 50 k-episode
+            # show section.
+            return self._section_page(
                 library_id,
                 type_code=type_code,
-                start_index=0,
-                limit=10_000,
+                start_index=start_index,
+                limit=limit,
                 search_term=search_term,
             )
-            sliced = page.items[start_index : start_index + limit]
-            return MediaPage(items=sliced, total=page.total)
 
+        # Multi-section aggregate. Plex has no recursive query so we still
+        # need one call per section, but we only fetch as many items as
+        # this page actually needs — `start_index + limit` items from each
+        # section is the upper bound (worst case: the requested page is
+        # entirely from one section). For typical homelab libraries with
+        # 1-2 video sections this is fine; pathological cases with many
+        # large sections still pay more than the single-section path.
         all_items: list[MediaItem] = []
         total = 0
+        per_section_cap = start_index + limit
         for section_key, type_code in self._video_sections():
             page = self._section_page(
                 section_key,
                 type_code=type_code,
                 start_index=0,
-                limit=10_000,
+                limit=per_section_cap,
                 search_term=search_term,
             )
             all_items.extend(page.items)
@@ -213,9 +244,18 @@ class PlexClient(MediaServerClient):
 
         Music ('artist') and photo ('photo') sections are skipped — we
         only subtitle videos.
+
+        Cache lives at module scope keyed on (base_url, token) so
+        successive PlexClient instances (built fresh per request in
+        manage.py) reuse it. Operators who change their library layout
+        need to restart the container — section adds/removes are rare
+        enough that an explicit invalidation path isn't worth the
+        complexity here.
         """
-        if self._video_sections_cache is not None:
-            return self._video_sections_cache
+        cache_key = (self._base, self._token)
+        cached = _VIDEO_SECTIONS_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
         r = self._http.get(f"{self._base}/library/sections")
         if r.status_code != 200:
             raise MediaServerError(
@@ -229,7 +269,8 @@ class PlexClient(MediaServerClient):
             key = d.get("key")
             if video_type is not None and key is not None:
                 pairs.append((str(key), video_type))
-        self._video_sections_cache = pairs
+        with _VIDEO_SECTIONS_LOCK:
+            _VIDEO_SECTIONS_CACHE[cache_key] = pairs
         return pairs
 
     def _section_page(

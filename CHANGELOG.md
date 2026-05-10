@@ -7,6 +7,88 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+### Added — P2 hardening (review items 14-35)
+
+A correctness/hygiene sweep across the code-review items that didn't make
+the resource-safety release. Mostly defensive tightening of inputs,
+clearer error messages, and a handful of small UX/perf wins.
+
+- **`/api/process/{id}` rejects garbage `mode` / `translation_provider`
+  at the FastAPI schema layer.** Both are now `Literal[...]` typed —
+  bad values 422 with the enum list, instead of falling through to a
+  less-readable BadRequest deeper in the pipeline.
+
+- **LLM translation provider now catches duplicate cue ids in the
+  response.** Previously a model that returned `[{id:0}, {id:0}, {id:1}]`
+  for a 3-cue batch silently dropped one cue under the dict-dedup. New
+  `Duplicate cue id(s) [...]` error surfaces it as a clear `TranslationError`
+  rather than producing a translation with missing lines.
+
+- **Frame-accurate seek for cinematic mode** (`cinematic_frame_accurate_seek`,
+  default false). False keeps the current fast keyframe-snap seek
+  (`-ss <ts> -i <file>`) for scene-bible keyframes and most cinematic
+  use cases. True switches the per-cue extractor to the combined seek
+  pattern (`-ss <ts-5> -i <file> -ss 5 -frames:v 1`) — frame-accurate at
+  the cost of decoding ~5s of video per cue. Useful only when extracted
+  frames will drive fine-grained visual decisions (lip-sync, on-screen
+  OCR).
+
+- **NLLB and DeepL batch sizes are now configurable.** New settings
+  `nllb_batch_size` (default 16, range 1-128) and `deepl_batch_size`
+  (default 50, capped at DeepL's documented per-call max). Surface in
+  the Translation section of the Settings UI — only visible when the
+  matching provider is selected. The previous hardcoded constants
+  forced one tuning for everyone.
+
+- **Plex `list_videos` forwards `start_index` / `limit` to the server.**
+  Previously every Library page render fetched 10 000 items per section
+  and sliced in Python — fine for small libraries, catastrophic for a
+  50 k-episode show section. Now we pass `X-Plex-Container-Start` /
+  `X-Plex-Container-Size` directly, so the server does the pagination.
+  The aggregate (no `library_id`) path now fetches only `start_index +
+  limit` items per section rather than 10 k.
+
+- **Plex section cache is now module-scoped and survives across
+  client instances.** `media_server_client()` builds a fresh `PlexClient`
+  per request, so the previous per-instance cache was always cold.
+  The new cache is keyed on `(base_url, token)` — so two users hitting
+  the same server with different tokens still don't share entries.
+
+- **Refresh failures are now logged at WARNING.** Previously
+  `server.refresh_item(...)` swallowed `MediaServerError` silently;
+  operators debugging "why didn't Emby pick up my new subtitle"
+  couldn't see why. The subtitle is still written; the log line just
+  tells you the server didn't get pinged.
+
+- **OpenVINO `_parse_segments` logs dropped degenerate timestamps**
+  at DEBUG level rather than discarding them invisibly. Regressions
+  that turn half the cues into degenerates become visible in `docker logs`.
+
+### Changed
+
+- **`_coerce` in the settings form uses `typing.get_origin` instead of
+  substring-matching `str(target)`.** Behavior on the current field set
+  is unchanged (covered by `test_ui_coerce.py`); the principled
+  inspection drops the silent mis-dispatch footgun for any future
+  annotation that mentions "bool" / "int" / "list" in a non-matching
+  position (e.g. a `Literal["bool"]` field would have coerced to bool
+  under the old logic).
+
+- **UI help text for the language write-back checkbox** now correctly
+  describes the per-backend behavior. The previous text claimed "we
+  always run a Whisper-tiny pre-pass" which is openvino-only — the
+  CPU/faster-whisper backend detects internally during the main
+  transcribe call.
+
+- **`vad_enabled` setting docstring** clarified that it's openvino-only
+  and that the CPU backend runs its own internal VAD which is unrelated
+  and not toggleable through this flag.
+
+- **`openai_compat` LLM client** documents the wire-format expectation
+  (typed-list user content). Modern Ollama / LM Studio / vLLM accept
+  it; ancient versions need an upgrade rather than a client-side
+  fallback.
+
 ## [0.5.0] — 2026-05-10
 
 The resource-safety + observability release. Triggered by a TrueNAS host
