@@ -5,6 +5,33 @@ from pathlib import Path
 from typing import Callable
 
 
+def try_malloc_trim() -> None:
+    """Force glibc to return unused malloc arenas back to the kernel.
+
+    Without this, after a large model (Whisper, NLLB) is freed by
+    Python's GC, the memory often stays in the process's heap held by
+    glibc's internal arenas instead of returning to the OS. The cgroup
+    still sees it as 'in use', and the next big allocation (e.g. NLLB
+    loading right after Whisper release) can trip the OOM-killer at
+    a moment when the application has *logically* freed the previous
+    model — that was the failure pattern that produced the 1.96 GB
+    anon-rss OOM on TrueNAS (the kill fired before the new allocation
+    completed, but cgroup memory was already capped by the un-trimmed
+    arenas from the previous phase).
+
+    Linux/glibc only — silent no-op on Alpine/musl or non-Linux hosts.
+    Our shipped container images (Debian python:3.12-slim and
+    Ubuntu24-based openvino runtime) both use glibc, so this is
+    effective there.
+    """
+    import ctypes
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 @dataclass
 class Cue:
     id: int

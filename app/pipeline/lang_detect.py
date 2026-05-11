@@ -31,10 +31,14 @@ def release_detector() -> None:
     """Drop the cached tiny Whisper detector (~75 MB on disk, ~250 MB
     resident). Called by processor.py after the pre-pass succeeds — we
     don't need it again in this job, and the freed RAM is helpful on
-    capped containers where every 100 MB counts at the translation peak."""
+    capped containers where every 100 MB counts at the translation peak.
+    try_malloc_trim() returns the freed glibc arenas to the kernel; see
+    its docstring in stt.py for why gc.collect() alone isn't enough."""
     import gc
+    from app.pipeline.stt import try_malloc_trim
     _detector.cache_clear()
     gc.collect()
+    try_malloc_trim()
 
 
 def detect(wav_path: Path) -> str | None:

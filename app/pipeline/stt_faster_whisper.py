@@ -20,10 +20,14 @@ def _model(name: str, device: str, compute_type: str) -> WhisperModel:
 def release_model() -> None:
     """Evict the cached CPU Whisper model. Mirror of stt_openvino.release_model
     — called between transcribe and translate so the local NLLB / vision-LLM
-    state can load without piling on top of an idle Whisper still resident."""
+    state can load without piling on top of an idle Whisper still resident.
+    try_malloc_trim() returns the freed glibc arenas to the kernel; see
+    its docstring in stt.py for why gc.collect() alone isn't enough."""
     import gc
+    from app.pipeline.stt import try_malloc_trim
     _model.cache_clear()
     gc.collect()
+    try_malloc_trim()
 
 
 def _noop_progress(frac: float) -> None: ...

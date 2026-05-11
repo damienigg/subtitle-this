@@ -121,10 +121,16 @@ def release_model() -> None:
     The cache_clear() drops the lru_cache's reference to (model, processor);
     gc.collect() walks any remaining cycles so the underlying OpenVINO
     CompiledModel destructor runs and releases the iGPU-reserved RAM.
+    try_malloc_trim() then forces glibc to return the freed arenas to
+    the kernel — without it the memory stays accounted against the
+    cgroup even though Python is logically done with it, and a large
+    follow-up allocation (NLLB load) can trip the OOM-killer.
     """
     import gc
+    from app.pipeline.stt import try_malloc_trim
     _model_and_processor.cache_clear()
     gc.collect()
+    try_malloc_trim()
 
 
 # Whisper auto-emits language tokens like <|en|>, <|fr|>, <|ja|> at the start

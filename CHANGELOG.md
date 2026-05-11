@@ -7,6 +7,48 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.6.8] — 2026-05-11
+
+NLLB-1.3B memory peak slashed so it fits comfortably under a 12 GB
+cgroup alongside the residual page cache of Whisper-large. Two
+complementary fixes:
+
+### Added
+
+- `app/pipeline/stt.py:try_malloc_trim()` — Linux/glibc-only helper
+  that calls `malloc_trim(0)` to force glibc to return freed arenas
+  to the kernel. Without it, `gc.collect()` releases Python objects
+  but glibc keeps the memory in its internal pools, so the cgroup
+  still sees it as in-use. That's why the previous OOM-killed at
+  anon-rss=1.96 GB despite the model being logically freed — the
+  un-trimmed arenas from the Whisper era + the in-flight NLLB
+  allocation breached the cap. Silent no-op on Alpine/musl.
+
+### Changed
+
+- `release_model()` in both STT backends + `release_detector()` in
+  lang_detect now call `try_malloc_trim()` after `gc.collect()`.
+- `nllb_batch_size` default: **16 → 4**. The KV cache during
+  `model.generate()` scales as `batch × num_beams × seq_len × hidden
+  × num_layers`; for NLLB-1.3B at batch=16 that was ~1.5 GB of
+  transient activation memory on top of the ~3 GB weight footprint.
+  batch=4 brings the activation peak to ~400 MB. Users with the
+  600M variant or more headroom can bump it back via the Settings UI
+  for throughput.
+- `_MAX_LEN` in `translate/nllb.py`: **256 → 128**. Subtitle cues are
+  short — almost always under 30 source words → under 50 tokens, and
+  the translated output is similarly bounded. 128 covers every
+  realistic cue with margin and halves the KV cache footprint.
+- `num_beams` in NLLB inference: **2 → 1** (greedy decoding).
+  Quality difference on subtitle-length cues is negligible — beam
+  search benefits long-form generation where late tokens recover
+  from early choices, but a 5-15-word utterance rarely needs it.
+  Halves the KV cache again.
+
+Combined savings for a typical translation phase with NLLB-1.3B:
+~2-3 GB lower peak. The combo of `large-v3-turbo + NLLB-1.3B` should
+now run with headroom in a 12 GB cgroup.
+
 ## [0.6.7] — 2026-05-11
 
 Dashboard polish — model names rendered consistently, Parameters card

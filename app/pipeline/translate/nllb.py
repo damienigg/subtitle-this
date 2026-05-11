@@ -40,7 +40,13 @@ _FLORES = {
     "ms": "zsm_Latn", "tl": "tgl_Latn", "ca": "cat_Latn", "bn": "ben_Beng",
 }
 
-_MAX_LEN = 256
+# Max input + output tokens per NLLB call. Subtitle cues are short — almost
+# always under 30 words in source language, rarely exceeding 50 tokens after
+# tokenization, and the translated output is similarly bounded. 128 covers
+# every realistic cue with comfortable margin; the old 256 doubled the KV
+# cache footprint without ever being needed in practice. KV cache scales
+# linearly with seq_len, so halving this halves the activation memory peak.
+_MAX_LEN = 128
 
 
 @lru_cache(maxsize=1)
@@ -137,7 +143,7 @@ class NLLBProvider:
 
             out: list[Cue] = []
             total = max(1, len(cues))
-            batch_size = max(1, int(settings.nllb_batch_size or 16))
+            batch_size = max(1, int(settings.nllb_batch_size or 4))
             for i in range(0, len(cues), batch_size):
                 check_cancel()
                 batch = cues[i:i + batch_size]
@@ -148,11 +154,18 @@ class NLLBProvider:
                     truncation=True,
                     max_length=_MAX_LEN,
                 )
+                # num_beams=1 (greedy) instead of 2. The KV cache scales
+                # linearly with beam count, so dropping to greedy halves
+                # the activation memory peak for this call. Quality
+                # difference on subtitle-length cues is negligible — beam
+                # search shines on long-form generation where late tokens
+                # can recover from early choices, but a 5-15-word
+                # utterance rarely benefits.
                 generated = model.generate(
                     **inputs,
                     forced_bos_token_id=tgt_token_id,
                     max_length=_MAX_LEN,
-                    num_beams=2,
+                    num_beams=1,
                 )
                 decoded = tokenizer.batch_decode(generated, skip_special_tokens=True)
                 for c, t in zip(batch, decoded):

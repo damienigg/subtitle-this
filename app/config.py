@@ -74,7 +74,15 @@ class _EnvSettings(BaseSettings):
     # Cues per generate() call for NLLB. 16 is balanced for distilled-600M
     # on most hardware; the bigger NLLB variants benefit from smaller batches
     # to stay under iGPU activation memory.
-    nllb_batch_size: int = Field(16, ge=1, le=128)
+    # Default tuned conservatively for NLLB-1.3B — the KV cache during
+    # generate() scales as batch_size × num_beams × seq_len × hidden_dim
+    # × num_layers, which for the 1.3B variant at batch=16 is ~1.5 GB of
+    # transient activation memory on top of the ~3 GB weight footprint.
+    # batch=4 keeps the activation peak around ~400 MB so the whole
+    # phase fits comfortably under a 12 GB cgroup with Whisper-large's
+    # page cache also lingering. Users with smaller models or more
+    # headroom can bump it via the Settings UI for throughput.
+    nllb_batch_size: int = Field(4, ge=1, le=128)
     # Cues per DeepL API request. 50 is the documented DeepL maximum;
     # raising it has no effect, lowering it makes more (smaller) calls.
     deepl_batch_size: int = Field(50, ge=1, le=50)

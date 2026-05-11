@@ -383,8 +383,10 @@ _FIELD_META: list[dict[str, Any]] = [
      "label": "Cues per NLLB batch", "type": "number",
      "show_if": {"field": "default_translation_provider", "equals": "nllb"},
      "help": "Only used when provider=NLLB. Higher = fewer model.generate() calls, "
-             "lower = less peak iGPU/CPU memory per call. 16 is the documented "
-             "balanced default; drop to 8 if you switched to NLLB-1.3B or 3.3B."},
+             "lower = less peak RAM per call (the KV cache scales with batch × "
+             "seq_len). Default 4 is tuned conservatively for NLLB-1.3B + a 12 GB "
+             "cgroup with Whisper-large page cache lingering; bump to 8-16 if you "
+             "use the 600M variant or have more memory headroom."},
     {"key": "deepl_batch_size", "section": "Translation",
      "label": "Cues per DeepL request", "type": "number",
      "show_if": {"field": "default_translation_provider", "equals": "deepl"},
