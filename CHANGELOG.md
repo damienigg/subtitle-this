@@ -7,6 +7,46 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-05-11
+
+NLLB-1.3B now fits comfortably under a 12 GB cgroup. Two changes
+target the residual translation-phase memory ceiling.
+
+### Added
+
+- New setting `nllb_load_in_8bit` (default **ON**). On the OpenVINO
+  path, the model is quantized to int8 via NNCF at load time. Cuts
+  resident weight memory in half — `distilled-1.3B` drops from
+  ~3 GB to ~1.5 GB. First-time export pays a 1-2 min quantization
+  step; the int8 IR is cached on disk so subsequent loads are fast.
+  Quality cost is ~0.3 BLEU, below the noise floor for subtitle
+  translation. Exposed in the Settings UI as "Compress NLLB weights
+  to int8 (OpenVINO path)" under the Translation section. The
+  CPU/torch fallback ignores this flag — bitsandbytes int8 needs
+  CUDA and isn't in the base image.
+
+### Changed
+
+- NLLB translation loop now does explicit `del inputs, generated,
+  decoded` after every batch + `gc.collect()` + `try_malloc_trim()`
+  every 10 batches. Without this, resident memory drifts upward
+  through a long translation (allocator fragmentation + lingering
+  internal pools from optimum-intel's OV inference) and eventually
+  trips a 12 GB cap even though no single batch is large. The
+  periodic trim returns the freed glibc arenas to the kernel so
+  the cgroup actually sees the memory back.
+
+### Behavioral effect
+
+On a 2 h film at large-v3-turbo (STT) + NLLB-distilled-1.3B
+(translation), translation-phase peak goes from ~11.5 GB
+(crashing at 12 GB) to roughly ~8 GB — comfortable headroom under
+a 12 GB cgroup even with Whisper's page cache still in residence.
+
+If you previously set `BABEL_NLLB_LOAD_IN_8BIT=false` (or you
+explicitly want fp32 weights for some reason) the toggle is in
+Settings → Translation.
+
 ## [0.7.0] — 2026-05-11
 
 **Resume from 80%.** When translation crashes (OOM, transient

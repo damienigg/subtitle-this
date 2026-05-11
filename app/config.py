@@ -83,6 +83,17 @@ class _EnvSettings(BaseSettings):
     # page cache also lingering. Users with smaller models or more
     # headroom can bump it via the Settings UI for throughput.
     nllb_batch_size: int = Field(4, ge=1, le=128)
+    # Compress NLLB weights to int8 at load time (OpenVINO path only —
+    # NNCF via optimum-intel). Halves resident weight memory (e.g.
+    # ~3 GB → ~1.5 GB for distilled-1.3B) at the cost of a one-time
+    # quantization step on first model load and a ~0.3 BLEU drop in
+    # translation quality, which is below the noise floor for subtitle
+    # work. Default ON because the 1.3B variant otherwise doesn't fit
+    # alongside Whisper's page cache in a 12 GB cgroup. Toggle off if
+    # you have headroom (16 GB+) and want full-precision weights.
+    # No-op on the CPU/torch fallback path — that backend doesn't have
+    # an in-process int8 quantization story without bitsandbytes (CUDA).
+    nllb_load_in_8bit: bool = True
     # Cues per DeepL API request. 50 is the documented DeepL maximum;
     # raising it has no effect, lowering it makes more (smaller) calls.
     deepl_batch_size: int = Field(50, ge=1, le=50)

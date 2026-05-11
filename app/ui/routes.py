@@ -387,6 +387,17 @@ _FIELD_META: list[dict[str, Any]] = [
              "seq_len). Default 4 is tuned conservatively for NLLB-1.3B + a 12 GB "
              "cgroup with Whisper-large page cache lingering; bump to 8-16 if you "
              "use the 600M variant or have more memory headroom."},
+    {"key": "nllb_load_in_8bit", "section": "Translation",
+     "label": "Compress NLLB weights to int8 (OpenVINO path)", "type": "checkbox",
+     "show_if": {"field": "default_translation_provider", "equals": "nllb"},
+     "help": "Halves resident weight memory by quantizing to int8 via NNCF at "
+             "load time (~3 GB → ~1.5 GB for distilled-1.3B). First-time load "
+             "pays a 1-2 min quantization cost; the result is cached on disk. "
+             "Quality cost is roughly 0.3 BLEU — below the noise floor for "
+             "subtitle work. Default ON because the 1.3B variant otherwise "
+             "doesn't fit in 12 GB of cgroup alongside Whisper's page cache. "
+             "Turn OFF only if you have 16+ GB headroom and want strict "
+             "full-precision weights. No effect on the CPU/torch fallback path."},
     {"key": "deepl_batch_size", "section": "Translation",
      "label": "Cues per DeepL request", "type": "number",
      "show_if": {"field": "default_translation_provider", "equals": "deepl"},
