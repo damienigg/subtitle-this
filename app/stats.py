@@ -122,6 +122,11 @@ class VttStats:
     # missing on on-demand recomputes from cached .vtt).
     took_seconds: float | None = None
 
+    # Per-run pipeline telemetry — VAD coverage, packing pad-drops,
+    # whisper degenerate-timestamp counts. None when the originating
+    # run didn't instrument it (CPU backend, or a pre-0.7.6 cache).
+    pipeline_metrics: dict[str, Any] | None = None
+
     # Cue stats
     cue_count: int = 0
     total_display_seconds: float = 0.0
@@ -151,6 +156,7 @@ def compute_from_vtt(
     mode: str | None = None,
     detected_source_language: str | None = None,
     took_seconds: float | None = None,
+    pipeline_metrics: dict | None = None,
 ) -> VttStats:
     """Compute the full stats record from a .vtt's text.
 
@@ -168,6 +174,7 @@ def compute_from_vtt(
         mode=mode,
         detected_source_language=detected_source_language,
         took_seconds=took_seconds,
+        pipeline_metrics=pipeline_metrics,
     )
     if media_path:
         from pathlib import Path

@@ -144,7 +144,11 @@ _LANG_TOKEN_RE = re.compile(
 )
 
 
-def _parse_segments(decoded: str, time_offset_s: float) -> list[tuple[float, float, str]]:
+def _parse_segments(
+    decoded: str,
+    time_offset_s: float,
+    on_drop: Callable[[], None] | None = None,
+) -> list[tuple[float, float, str]]:
     """Parse a Whisper decoded-with-timestamps string into [(start, end, text)].
 
     Whisper emits output as: <|0.00|>text<|2.50|>text<|5.00|>... — each
@@ -177,6 +181,8 @@ def _parse_segments(decoded: str, time_offset_s: float) -> list[tuple[float, flo
             # regression that turns half the cues into degenerates is
             # visible rather than silently halving the output.
             dropped += 1
+            if on_drop is not None:
+                on_drop()
     if dropped:
         _log.debug(
             "_parse_segments dropped %d cue(s) with degenerate timestamps "
@@ -249,6 +255,15 @@ def transcribe(
 
     batch_size = _BATCH_BY_MODEL.get(settings.whisper_model, _DEFAULT_BATCH)
 
+    # Per-run aggregators for the .stats.json sidecar. The VAD aggregator
+    # absorbs every per-segment ``detect_speech`` call's output; packing
+    # / whisper aggregators get poked from inside the inner loop. None
+    # of these access the heavy ML deps so they're cheap.
+    from app import pipeline_metrics as pm_mod
+    vad_agg = pm_mod.VadAggregator()
+    packing_agg = pm_mod.PackingAggregator(enabled=packing_enabled)
+    whisper_agg = pm_mod.WhisperAggregator()
+
     cues: list[Cue] = []
     next_id = 0
     detected_lang: str | None = None
@@ -297,6 +312,10 @@ def transcribe(
                 speech_regions = detect_speech(seg_audio, _SAMPLE_RATE)
             else:
                 speech_regions = [(0, seg_length_samples)]
+            # vad_agg.observe is invoked AFTER consumed_samples /
+            # processable_regions are computed (further down), so it
+            # records only what THIS iteration consumes — not the
+            # overlap zone that the next iteration will re-detect.
 
             # Decide where this segment ends and the next one starts:
             #   - Process all regions that BEGIN before main_end_in_seg.
@@ -335,6 +354,17 @@ def transcribe(
                         continue
                     processable_regions.append((r_start, r_end))
                 consumed_samples = seg_length_samples
+
+            # Record this iteration's VAD output into the aggregator
+            # using consumed_samples as the audio denominator. Region
+            # accounting is on processable_regions so deferred regions
+            # don't get counted twice when the next iteration picks
+            # them up via the overlap re-read.
+            vad_agg.observe(
+                seg_audio_seconds=consumed_samples / _SAMPLE_RATE,
+                regions=processable_regions,
+                sample_rate=_SAMPLE_RATE,
+            )
 
             if not processable_regions:
                 # All-silence segment. Advance and continue.
@@ -393,6 +423,11 @@ def transcribe(
                         token_ids[k], skip_special_tokens=False,
                         decode_with_timestamps=True,
                     )
+                    # Window-level stats: how many regions Whisper saw
+                    # packed into this 30 s decode. Single-region
+                    # windows can't suffer pad-drop; only multi-region
+                    # ones can. Both counts get aggregated.
+                    packing_agg.record_window(n_regions=len(win.region_map))
                     # Parse with offset=0 to get window-relative cues; we
                     # remap each cue through the window's region_map below.
                     # remap_cue_to_original returns segment-relative seconds
@@ -404,14 +439,19 @@ def transcribe(
                     # first segment's window of the timeline (regression
                     # introduced when the packing-based remap replaced the
                     # old additive offset path).
-                    for win_start, win_end, text in _parse_segments(decoded, 0.0):
+                    for win_start, win_end, text in _parse_segments(
+                        decoded, 0.0,
+                        on_drop=whisper_agg.record_degenerate_timestamp_drop,
+                    ):
                         mapped = remap_cue_to_original(
                             win_start, win_end, win.region_map, _SAMPLE_RATE,
                         )
                         if mapped is None:
                             # Cue fell in a pad zone (silence between packed
                             # regions) — Whisper hallucinated, drop it.
+                            packing_agg.record_cue_drop_pad_zone()
                             continue
+                        packing_agg.record_cue_keep()
                         orig_start, orig_end = mapped
                         cues.append(Cue(
                             id=next_id,
@@ -439,6 +479,11 @@ def transcribe(
     return TranscriptionResult(
         detected_language=language_hint or detected_lang or "en",
         cues=cues,
+        pipeline_metrics=pm_mod.PipelineMetrics(
+            vad=vad_agg.finalize(),
+            packing=packing_agg.finalize(),
+            whisper=whisper_agg.finalize(),
+        ),
     )
 
 

@@ -7,6 +7,57 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.6] — 2026-05-12
+
+Per-run pipeline telemetry: the stats sidecar (and the Cache
+Explorer's stats page) now carry enough evidence to identify with
+confidence which of the four candidate causes is dropping cues —
+VAD too strict, region-packing pad-drop, Whisper compressed
+timestamps, or Whisper hallucinations.
+
+### Added
+
+- New module `app/pipeline_metrics.py` with three aggregators that
+  the OpenVINO STT loop populates as it runs:
+  - **VadAggregator**: total audio analyzed, total speech detected
+    by Silero, speech ratio (low % → VAD too strict for the mix),
+    region count, region duration histogram (lt_0_25s, 0_25_to_0_5s,
+    0_5_to_1s, 1_to_3s, 3_to_10s, gte_10s — the 0.25-0.5 s bucket
+    flags barely-passed regions), average/median region duration,
+    short_region_pct (share &lt; 0.5 s).
+  - **PackingAggregator**: total Whisper windows, single-region vs
+    packed counts, avg regions/window, **cue_drop_pad_zone_count**
+    (cues silently dropped because Whisper-predicted timestamps fell
+    in a packed window's silence-pad zone — the direct evidence for
+    pathology #2), cue_keep_count.
+  - **WhisperAggregator**: count of cues with degenerate timestamps
+    (end ≤ start) dropped by `_parse_segments`. Spike here
+    corroborates pathology #3 (turbo-on-packed compressed
+    timestamps).
+- `_parse_segments` accepts an `on_drop` callback so the inner loop
+  feeds the whisper aggregator without changing the parser's return
+  shape (existing tests untouched).
+- `TranscriptionResult`, `ProcessResult`, the VTT cache payload,
+  the transcript cache payload, and the .stats.json sidecar all
+  carry `pipeline_metrics` through end-to-end. A cache hit
+  preserves the original-run telemetry.
+- Cache Stats page gains three new sections (VAD, Region packing,
+  Whisper) with inline thresholds telling the user which numbers
+  are healthy vs. concerning (speech ratio &lt; 25 % → warn,
+  pad-drop share &gt; 10 % → warn, short_region_pct &gt; 25 % →
+  warn). Entries from pre-0.7.6 runs gracefully degrade to a "no
+  telemetry available — re-process to capture" note.
+
+### Tests
+
+- 11 new tests in `tests/test_pipeline_metrics.py` covering each
+  aggregator's math (sum, average, median, histogram bin
+  classification, edge-zero handling, enabled-flag carry-through,
+  serialization-with-None semantics).
+- Existing segment-offset regression test extended to assert that
+  `pipeline_metrics` are populated and that single-region windows
+  produce zero pad-drops.
+
 ## [0.7.5] — 2026-05-12
 
 Objective quality / coverage metrics per completed conversion —

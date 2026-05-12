@@ -180,6 +180,7 @@ def submit_item_job(
             mode=result.mode,
             detected_source_language=result.detected_source_language,
             took_seconds=result.took_seconds,
+            pipeline_metrics=result.pipeline_metrics,
         )
         stats_mod.write_sidecar(out, stats_record)
 
@@ -448,6 +449,9 @@ def cache_vtt_stats(cache_key: str) -> dict:
         mode=payload.get("mode") if isinstance(payload, dict) else None,
         detected_source_language=(
             payload.get("detected_source_language") if isinstance(payload, dict) else None
+        ),
+        pipeline_metrics=(
+            payload.get("pipeline_metrics") if isinstance(payload, dict) else None
         ),
     )
     return stats_mod.to_jsonable(record)

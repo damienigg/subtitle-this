@@ -840,6 +840,9 @@ def cache_stats_page(request: Request, cache_key: str) -> HTMLResponse:
         detected_source_language=(
             payload.get("detected_source_language") if isinstance(payload, dict) else None
         ),
+        pipeline_metrics=(
+            payload.get("pipeline_metrics") if isinstance(payload, dict) else None
+        ),
     )
     return templates.TemplateResponse(
         request,

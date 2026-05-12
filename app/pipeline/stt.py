@@ -1,5 +1,7 @@
 """STT dispatcher. Concrete backends live in sibling modules and are loaded lazily
 so we never import a backend's heavy deps unless it's actually selected."""
+from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -44,6 +46,16 @@ class Cue:
 class TranscriptionResult:
     detected_language: str
     cues: list[Cue]
+    # Per-run instrumentation counters (VAD / packing / whisper). None
+    # for the CPU backend and any older transcript-cache entry that
+    # was stored before the field existed — downstream consumers must
+    # tolerate the absence. PipelineMetrics annotation resolves lazily
+    # thanks to ``from __future__ import annotations`` at the top of
+    # this module, so the import doesn't have to live at module load.
+    pipeline_metrics: PipelineMetrics | None = None
+
+
+from app.pipeline_metrics import PipelineMetrics   # noqa: E402,F401
 
 
 def _noop_progress(frac: float) -> None: ...

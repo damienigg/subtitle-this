@@ -111,6 +111,11 @@ class ProcessResult:
     mode: str
     cached: bool
     took_seconds: float
+    # Optional per-run pipeline telemetry — VAD coverage, packing pad-
+    # drops, whisper-degenerate-timestamp counts. None when served
+    # from a cache hit that pre-dates the telemetry-bearing payload,
+    # populated otherwise. Surfaced on the Cache Explorer stats page.
+    pipeline_metrics: "dict | None" = None
 
 
 def validate_mode_provider_combo(mode: str, translation_provider: str) -> None:
@@ -228,6 +233,7 @@ def process(
             mode=cached.get("mode", req.mode),
             cached=True,
             took_seconds=time.monotonic() - started,
+            pipeline_metrics=cached.get("pipeline_metrics"),
         )
 
     progress(0, "extracting audio")
@@ -375,6 +381,16 @@ def process(
         ),
     )
 
+    # Serialize pipeline_metrics for the cache payload (and for the
+    # ProcessResult). The transcription struct holds them as a
+    # PipelineMetrics dataclass — flatten to a JSON-safe dict here so
+    # both the on-disk cache and a re-run from a cache hit can carry
+    # the same structure forward without re-running STT.
+    pipeline_metrics_dict: dict | None = None
+    if transcription.pipeline_metrics is not None:
+        from app import pipeline_metrics as pm_mod
+        pipeline_metrics_dict = pm_mod.to_jsonable(transcription.pipeline_metrics)
+
     payload = {
         "vtt": vtt,
         # media_path lets the Cache Explorer UI render the film name without
@@ -385,6 +401,10 @@ def process(
         "detected_source_language": transcription.detected_language,
         "cue_count": len(translated),
         "mode": req.mode,
+        # Pipeline telemetry — None on legacy cache hits and on the
+        # CPU/faster-whisper backend (only the OpenVINO path instruments
+        # VAD / packing today). Consumers must tolerate the absence.
+        "pipeline_metrics": pipeline_metrics_dict,
     }
     # Store under both fingerprints so any future lookup — by quick fp or
     # by content fp after an mtime bump — retrieves the payload.
@@ -407,6 +427,7 @@ def process(
         mode=req.mode,
         cached=False,
         took_seconds=time.monotonic() - started,
+        pipeline_metrics=pipeline_metrics_dict,
     )
 
 

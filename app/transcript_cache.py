@@ -62,6 +62,31 @@ def _store_dir() -> Path:
     return Path(settings.cache_dir) / "transcripts"
 
 
+def _pm_from_dict(data: dict) -> "PipelineMetrics | None":
+    """Rehydrate a PipelineMetrics dataclass from its JSON form.
+    Tolerates missing keys / unknown types — anything that can't be
+    decoded becomes None so a partial / older payload doesn't crash
+    the lookup. Lazy import keeps the metrics module out of this
+    file's import-time graph for the common path."""
+    if not isinstance(data, dict):
+        return None
+    from app.pipeline_metrics import (
+        PipelineMetrics, VadMetrics, PackingMetrics, WhisperMetrics,
+    )
+    def _construct(cls, src):
+        if not isinstance(src, dict):
+            return None
+        # Filter to known fields so a future schema field on disk doesn't
+        # break old code via TypeError.
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        return cls(**{k: v for k, v in src.items() if k in known})
+    return PipelineMetrics(
+        vad=_construct(VadMetrics, data.get("vad")),
+        packing=_construct(PackingMetrics, data.get("packing")),
+        whisper=_construct(WhisperMetrics, data.get("whisper")),
+    )
+
+
 def _key(
     content_fp: str,
     whisper_model: str,
@@ -110,9 +135,18 @@ def lookup(
         with open(path) as f:
             data = json.load(f)
         cues = [Cue(**c) for c in data["cues"]]
+        # pipeline_metrics is optional (added in 0.7.6) — older caches
+        # won't have it, and the dataclass field default is None so
+        # the absence reads cleanly. We re-hydrate from the flat dict
+        # rather than reconstructing the dataclass tree because the
+        # downstream consumer (processor → VTT cache payload → stats)
+        # passes it through as opaque JSON anyway.
+        pm_data = data.get("pipeline_metrics")
+        pipeline_metrics = _pm_from_dict(pm_data) if pm_data else None
         return TranscriptionResult(
             detected_language=data["detected_language"],
             cues=cues,
+            pipeline_metrics=pipeline_metrics,
         )
     except (json.JSONDecodeError, KeyError, TypeError, OSError) as e:
         _log.warning("transcript_cache: %s unreadable (%s) — quarantining", path, e)
@@ -145,6 +179,12 @@ def store(
             "detected_language": result.detected_language,
             "cues": [asdict(c) for c in result.cues],
         }
+        # Persist pipeline_metrics so a cache hit preserves the
+        # provenance numbers — without this, replaying from the
+        # transcript cache would silently lose the VAD / packing
+        # telemetry the original run captured.
+        if result.pipeline_metrics is not None:
+            payload["pipeline_metrics"] = asdict(result.pipeline_metrics)
         with open(tmp, "w") as f:
             json.dump(payload, f)
         os.replace(tmp, path)

@@ -137,6 +137,133 @@
   {% endif %}
 </section>
 
+{# ── Pipeline telemetry (per-phase metrics) ─────────────────── #}
+{% if stats.pipeline_metrics %}
+  {% set pm = stats.pipeline_metrics %}
+
+  {# VAD section #}
+  {% if pm.vad %}
+    {% set vad = pm.vad %}
+    <section>
+      <h2>VAD <span class="muted small">(Silero — speech detection before Whisper)</span></h2>
+      <table class="kv">
+        <tr><th>Audio analyzed</th><td>{{ vad.total_audio_seconds|int|duration }}
+          <span class="muted small">({{ vad.total_audio_seconds }} s)</span></td></tr>
+        <tr><th>Speech detected</th><td>{{ vad.total_speech_seconds_detected|int|duration }}
+          <span class="muted small">({{ vad.total_speech_seconds_detected }} s)</span></td></tr>
+        <tr><th>Speech ratio</th><td>
+          {{ vad.speech_ratio_pct }} %
+          <span class="{% if vad.speech_ratio_pct < 25 %}warn-text{% else %}muted{% endif %} small">
+            (dialog-heavy films usually 35-55 %; &lt; 25 % suggests VAD threshold too strict for the mix)
+          </span>
+        </td></tr>
+        <tr><th>Regions found</th><td>{{ vad.region_count }}</td></tr>
+        <tr><th>Region duration (avg / median)</th>
+          <td>{{ vad.avg_region_seconds }} s / {{ vad.median_region_seconds }} s</td></tr>
+        <tr><th>Barely-passed regions</th><td>
+          {{ vad.short_region_pct }} %
+          <span class="{% if vad.short_region_pct > 25 %}warn-text{% else %}muted{% endif %} small">
+            (regions &lt; 0.5 s — Silero's 250 ms floor; high % means
+            VAD is trimming short words off longer utterances)
+          </span>
+        </td></tr>
+      </table>
+
+      {% if vad.region_duration_histogram %}
+      <h3>VAD region duration histogram</h3>
+      {% set vad_buckets = [
+        ('< 0.25 s',  vad.region_duration_histogram.get('lt_0_25s', 0)),
+        ('0.25-0.5 s', vad.region_duration_histogram.get('0_25_to_0_5s', 0)),
+        ('0.5-1 s',   vad.region_duration_histogram.get('0_5_to_1s', 0)),
+        ('1-3 s',     vad.region_duration_histogram.get('1_to_3s', 0)),
+        ('3-10 s',    vad.region_duration_histogram.get('3_to_10s', 0)),
+        ('> 10 s',    vad.region_duration_histogram.get('gte_10s', 0)),
+      ] %}
+      {% set max_vb = vad_buckets | map(attribute=1) | max %}
+      <table class="bar-table">
+        {% for label, n in vad_buckets %}
+          {% set bar_pct = (n / max_vb * 100) if max_vb > 0 else 0 %}
+          <tr>
+            <th>{{ label }}</th>
+            <td class="bar-cell"><div class="bar" style="width: {{ bar_pct }}%"></div></td>
+            <td class="bar-count">{{ n }}</td>
+          </tr>
+        {% endfor %}
+      </table>
+      <p class="muted small">
+        A heavy <strong>0.25-0.5 s</strong> bucket combined with a low speech ratio
+        is the "film mix" pathology: Silero is rejecting longer utterances entirely
+        AND trimming short ones to their core. Tuning <code>threshold</code> down
+        (0.5 → 0.3) and <code>speech_pad_ms</code> up (30 → 200) usually surfaces
+        more on the next run.
+      </p>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  {# Packing section #}
+  {% if pm.packing %}
+    {% set pk = pm.packing %}
+    <section>
+      <h2>Region packing <span class="muted small">(STT optimization — 30 s windows with pad-separated regions)</span></h2>
+      <table class="kv">
+        <tr><th>Enabled this run</th><td>{{ 'yes' if pk.enabled else 'no' }}</td></tr>
+        <tr><th>Total Whisper windows</th><td>{{ pk.windows_total }}</td></tr>
+        <tr><th>Packed (&gt; 1 region)</th><td>{{ pk.windows_packed }}</td></tr>
+        <tr><th>Single-region</th><td>{{ pk.windows_single_region }}</td></tr>
+        <tr><th>Avg regions / window</th><td>{{ pk.avg_regions_per_window }}</td></tr>
+        <tr><th>Cues kept</th><td>{{ pk.cue_keep_count }}</td></tr>
+        <tr><th>Cues dropped — pad zone</th><td>
+          {{ pk.cue_drop_pad_zone_count }}
+          {% set drop_total = pk.cue_keep_count + pk.cue_drop_pad_zone_count %}
+          {% if drop_total > 0 %}
+            {% set drop_pct = (100.0 * pk.cue_drop_pad_zone_count / drop_total) | round(1) %}
+            <span class="{% if drop_pct > 10 %}warn-text{% else %}muted{% endif %} small">
+              ({{ drop_pct }} % of total — these are cues whose Whisper-predicted
+              timestamp fell in a silence pad between packed regions and got
+              silently dropped by remap_cue_to_original)
+            </span>
+          {% endif %}
+        </td></tr>
+      </table>
+      <p class="muted small">
+        Single-region windows can't suffer pad-drop (no pads inside the window).
+        Only multi-region (packed) windows can. If
+        <strong>cue_drop_pad_zone_count</strong> is large AND
+        <strong>windows_packed</strong> dominates, the packing optimization is
+        costing real cues — try turning <code>stt_region_packing</code> OFF and
+        comparing. Cost of OFF: 1.5-3× more iGPU compute on dialog-heavy films.
+      </p>
+    </section>
+  {% endif %}
+
+  {# Whisper section #}
+  {% if pm.whisper %}
+    {% set wh = pm.whisper %}
+    <section>
+      <h2>Whisper</h2>
+      <table class="kv">
+        <tr><th>Degenerate timestamp drops</th><td>
+          {{ wh.cue_drop_degenerate_timestamp_count }}
+          <span class="muted small">
+            (cues emitted with <code>end &lt;= start</code> — usually hallucinations,
+            but a spike means the model is producing compressed timestamps on
+            packed windows; corroborates the very-short-cue signal above)
+          </span>
+        </td></tr>
+      </table>
+    </section>
+  {% endif %}
+{% else %}
+  <section>
+    <p class="muted">
+      <em>No pipeline telemetry available for this entry — it was produced by the
+      CPU/faster-whisper backend or by a pre-0.7.6 run. Re-process to get VAD,
+      packing, and Whisper-level metrics.</em>
+    </p>
+  </section>
+{% endif %}
+
 <section>
   <p class="muted small">
     <a href="/api/cache/vtt/{{ cache_key }}/stats">Raw JSON</a>

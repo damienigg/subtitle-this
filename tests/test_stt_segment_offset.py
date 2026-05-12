@@ -142,3 +142,20 @@ def test_transcribe_applies_segment_offset_to_cues(monkeypatch):
     )
     assert 60.5 < c1.start < 61.5, c1
     assert 62.5 < c1.end < 63.5, c1
+
+    # 0.7.6: the run must also produce pipeline_metrics. We can't be
+    # super-strict on values (Silero isn't mocked in this path — VAD
+    # itself is bypassed via detect_speech monkeypatch), but the
+    # *presence* of each sub-record is a useful regression guard.
+    pm = result.pipeline_metrics
+    assert pm is not None, "transcribe() should attach pipeline_metrics in 0.7.6+"
+    assert pm.vad is not None
+    assert pm.packing is not None
+    assert pm.whisper is not None
+    # Two segments processed, each with one region.
+    assert pm.vad.region_count == 2
+    # Two windows (one per segment), both single-region.
+    assert pm.packing.windows_total == 2
+    assert pm.packing.windows_single_region == 2
+    assert pm.packing.cue_keep_count == 2
+    assert pm.packing.cue_drop_pad_zone_count == 0
