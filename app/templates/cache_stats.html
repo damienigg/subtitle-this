@@ -71,6 +71,18 @@
     <tr><th>Mode</th><td>{{ stats.mode or '—' }}</td></tr>
     <tr><th>Provider</th><td>{{ stats.provider or '—' }}</td></tr>
     <tr><th>Whisper</th><td>{{ stats.whisper_model or '—' }}</td></tr>
+    <tr><th>Readability polish</th><td>
+      {% if stats.polished is sameas true %}
+        <span class="status-pill ok">✨ polished</span>
+        <span class="muted small">(readable timings applied — extend short cues, merge fragments)</span>
+      {% elif stats.polished is sameas false %}
+        <span class="status-pill warn">raw</span>
+        <span class="muted small">(polish was disabled when this .vtt was written)</span>
+      {% else %}
+        <span class="status-pill muted">unknown</span>
+        <span class="muted small">(pre-0.7.20 entry — re-polish from Cache Explorer to apply current settings)</span>
+      {% endif %}
+    </td></tr>
     {% if stats.took_seconds %}
     <tr><th>Wall clock</th><td>{{ stats.took_seconds|int|duration }}</td></tr>
     {% endif %}

@@ -420,15 +420,25 @@ def process(
     # by per-knob settings. Operates on the translated cue list so
     # reading-speed math uses the target-language text length.
     from app.pipeline.polish import polish_cues
+    polish_applied = bool(settings.polish_enabled)
     translated = polish_cues(translated)
 
-    vtt = to_webvtt(
-        translated,
-        header_note=(
-            f"Subtitle This auto-subs ({transcription.detected_language} -> {req.target_lang}, "
-            f"mode={req.mode}, whisper={settings.whisper_model}, provider={req.translation_provider})"
-        ),
+    # The NOTE header in the .vtt records provenance so a downstream
+    # viewer (Cache Explorer / stats page / a human reading the file)
+    # can tell at a glance which pipeline produced it. ``polished=true``
+    # is the marker for "readability polish was applied" — pre-0.7.20
+    # entries and any post-0.7.20 entry that ran with polish_enabled
+    # = false will lack the suffix, which the UI surfaces as a
+    # "raw timing" indicator.
+    note_body = (
+        f"Subtitle This auto-subs ({transcription.detected_language} -> {req.target_lang}, "
+        f"mode={req.mode}, whisper={settings.whisper_model}, provider={req.translation_provider}"
     )
+    if polish_applied:
+        note_body += ", polished=true"
+    note_body += ")"
+
+    vtt = to_webvtt(translated, header_note=note_body)
 
     # Serialize pipeline_metrics for the cache payload (and for the
     # ProcessResult). The transcription struct holds them as a

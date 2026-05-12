@@ -113,7 +113,34 @@ def polish_vtt_text(vtt_text: str) -> str:
     if not cues:
         return vtt_text
     polished = polish_cues(cues)
+    # Stamp the header with ``polished=true`` so the resulting .vtt
+    # advertises that it has been through the polish pass. Idempotent
+    # — if the note already carries the marker (re-polish on an
+    # already-polished file), the helper leaves it alone.
+    header_note = _stamp_polished_marker(header_note)
     return to_webvtt(polished, header_note=header_note)
+
+
+def _stamp_polished_marker(note: str | None) -> str | None:
+    """Ensure a NOTE header carries ``polished=true`` before its
+    closing parenthesis. Idempotent and tolerant of headers that
+    don't follow the canonical "(...)" shape (in which case the
+    marker is just appended at the end).
+
+    Returns None unchanged so callers can pass through "no header"
+    cases without re-checking."""
+    if note is None:
+        return None
+    if "polished=true" in note:
+        return note
+    if "polished=false" in note:
+        # Pre-existing explicit false marker — flip it.
+        return note.replace("polished=false", "polished=true")
+    if note.rstrip().endswith(")"):
+        # Insert before the closing parenthesis.
+        idx = note.rfind(")")
+        return note[:idx] + ", polished=true" + note[idx:]
+    return note + " polished=true"
 
 
 def _parse_vtt_to_cues(vtt_text: str) -> tuple[list[Cue], str | None]:

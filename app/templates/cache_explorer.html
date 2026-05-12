@@ -43,6 +43,7 @@
           <th>Mode</th>
           <th>Provider</th>
           <th>Whisper</th>
+          <th>Polish</th>
           <th>Cues</th>
           <th>Size</th>
           <th>Modified</th>
@@ -72,6 +73,22 @@
           <td>{{ e.mode or '—' }}</td>
           <td>{{ e.provider or '—' }}</td>
           <td>{{ e.whisper_model or '—' }}</td>
+          <td>
+            {# Polish status reads from the .vtt's NOTE header marker:
+               True → "✨ polished" pill (readable timings applied),
+               False → "raw" pill (explicit opt-out from polish),
+               None → "unknown" pill for legacy entries that pre-date
+               the marker. Clicking the ✨ button on the right re-runs
+               polish; on completion the row reload picks up the new
+               marker. #}
+            {% if e.polished is sameas true %}
+              <span class="status-pill ok" title="Readability polish applied">✨ polished</span>
+            {% elif e.polished is sameas false %}
+              <span class="status-pill warn" title="Polish was disabled when this .vtt was written">raw</span>
+            {% else %}
+              <span class="status-pill muted" title="No polish marker (pre-0.7.20 entry — click ✨ to apply polish now)">?</span>
+            {% endif %}
+          </td>
           <td>{{ e.cue_count if e.cue_count is not none else '—' }}</td>
           <td>{{ e.size_bytes | filesizeformat }}</td>
           <td><span class="muted small">{{ e.modified_at | ts_relative }}</span></td>

@@ -42,12 +42,16 @@ from app.config import settings
 # explorer existed (which don't carry media_path either).
 #
 #   NOTE Subtitle This auto-subs (en -> fr, mode=audio, whisper=large-v3-turbo, provider=nllb)
+# or, with the 0.7.20 readability marker:
+#   NOTE Subtitle This auto-subs (en -> fr, mode=audio, whisper=..., provider=nllb, polished=true)
 _NOTE_RE = re.compile(
     r"NOTE Subtitle This auto-subs "
     r"\((?P<src>[a-z]{2}) -> (?P<tgt>[a-z]{2}), "
     r"mode=(?P<mode>[a-z]+), "
     r"whisper=(?P<whisper>[^,]+), "
-    r"provider=(?P<provider>[^)]+)\)"
+    r"provider=(?P<provider>[^,)]+)"
+    r"(?:, polished=(?P<polished>true|false))?"
+    r"\)"
 )
 
 
@@ -71,6 +75,11 @@ class VttEntry:
     mode: str | None = None
     provider: str | None = None
     whisper_model: str | None = None
+    # Polish marker from the NOTE header — True / False / None.
+    # None means "no marker present" (pre-0.7.20 entries) which the
+    # UI surfaces as a "polish status unknown" pill so the operator
+    # knows to re-polish if they want the readability pass applied.
+    polished: bool | None = None
     cue_count: int | None = None
     size_bytes: int = 0                  # sum across all files in the group
     modified_at: float = 0.0             # max mtime in the group
@@ -138,6 +147,8 @@ def _parse_vtt_payload(path: Path) -> VttEntry:
                 entry.mode = m.group("mode")
             entry.whisper_model = m.group("whisper")
             entry.provider = m.group("provider")
+            polished_g = m.group("polished")
+            entry.polished = (polished_g == "true") if polished_g else None
         # First cue's text, truncated. Skip the WEBVTT/NOTE preamble.
         for chunk in vtt.split("\n\n"):
             lines = chunk.strip().split("\n")
@@ -154,7 +165,12 @@ def _dedupe_key(e: VttEntry) -> tuple:
     """The "logical record" identifier — two on-disk files with the
     same dedupe key represent the same run (two-level cache writes
     each payload under both the quick-fp and content-fp keys). Used
-    to collapse those into one UI row."""
+    to collapse those into one UI row.
+
+    ``polished`` is NOT part of the dedupe key — the same logical
+    cache record can switch between polished/unpolished across
+    re-polish cycles, and we want the UI to show one row whose
+    polished pill flips when the marker changes."""
     return (
         e.media_path or "",
         e.source_lang or "",

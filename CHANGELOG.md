@@ -7,6 +7,59 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.20] — 2026-05-12
+
+### Added
+
+- **Polish marker in the .vtt NOTE header.** Every .vtt that went
+  through the readability polish pass now carries a
+  ``polished=true`` field in the
+  ``NOTE Subtitle This auto-subs (...)`` line. A reader can tell
+  at a glance whether the file is post-polish or raw Whisper
+  output, without having to compare cue distributions.
+
+  Example:
+  ```
+  NOTE Subtitle This auto-subs (en -> fr, mode=audio,
+       whisper=large-v3-turbo, provider=nllb, polished=true)
+  ```
+
+- New ``polished: bool | None`` field on ``VttStats`` (stats
+  record) and ``VttEntry`` (Cache Explorer row). Three states:
+  True (marker present + true), False (marker present + false —
+  polish was explicitly disabled at write time), None (no marker
+  — pre-0.7.20 entries).
+- **UI surfacing**:
+  - New "Polish" column in the Cache Explorer table with a pill
+    per row: ✨ polished (green) / raw (amber) / ? unknown (muted).
+    Hovering each variant explains what it means and how to
+    re-polish if needed.
+  - Cache Stats page's Pipeline section now shows a "Readability
+    polish" row reflecting the same three-state marker.
+
+### Changed
+
+- ``polish_vtt_text`` now stamps ``polished=true`` on the
+  re-emitted NOTE header. Idempotent — re-polishing an already-
+  marked file leaves the marker in place rather than duplicating
+  it.
+- The NOTE-header regex in ``cache_explorer.py``, ``stats.py``,
+  and ``api/manage.py`` now accepts an optional
+  ``(?:, polished=(true|false))?`` group before the closing
+  parenthesis. The ``provider`` field's match is tightened from
+  ``[^)]+`` to ``[^,)]+`` so it doesn't greedily swallow the
+  new marker.
+
+### Tests
+
+- 4 new tests covering the marker round-trip:
+  - polish_vtt_text stamps the marker once and only once
+    (idempotent on re-polish);
+  - all other NOTE fields survive the stamp;
+  - stats.polished captures True when the marker is present;
+  - stats.polished stays None when no marker is present
+    (legacy compatibility).
+
 ## [0.7.19] — 2026-05-12
 
 ### Fixed

@@ -117,6 +117,10 @@ class VttStats:
     whisper_model: str | None = None
     detected_source_language: str | None = None
     cache_key: str | None = None
+    # True/False when the .vtt's NOTE header carries the marker
+    # (0.7.20+); None for legacy entries whose marker is absent
+    # (treated as "polish status unknown" by the UI).
+    polished: bool | None = None
 
     # Job-level timings (only present when computed from a live job;
     # missing on on-demand recomputes from cached .vtt).
@@ -186,18 +190,26 @@ def compute_from_vtt(
         from pathlib import Path
         stats.media_name = Path(media_path).name
 
-    # NOTE line: same shape as in the Cache Explorer.
+    # NOTE line: same shape as in the Cache Explorer. The optional
+    # ``polished=true`` group at the end is the 0.7.20+ marker —
+    # captured for surfacing on the stats page, absent on pre-0.7.20
+    # entries (in which case ``polished`` stays None and the UI
+    # renders "polish status unknown").
     note_re = re.compile(
         r"NOTE Subtitle This auto-subs "
         r"\((?P<src>[a-z]{2}) -> (?P<tgt>[a-z]{2}), "
         r"mode=(?P<mode>[a-z]+), "
         r"whisper=(?P<whisper>[^,]+), "
-        r"provider=(?P<provider>[^)]+)\)"
+        r"provider=(?P<provider>[^,)]+)"
+        r"(?:, polished=(?P<polished>true|false))?"
+        r"\)"
     )
     m = note_re.search(vtt_text)
     if m:
         stats.source_lang = m.group("src")
         stats.target_lang = m.group("tgt")
+        polished_g = m.group("polished")
+        stats.polished = (polished_g == "true") if polished_g else None
         if stats.mode is None:
             stats.mode = m.group("mode")
         stats.whisper_model = m.group("whisper")

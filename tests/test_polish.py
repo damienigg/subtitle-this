@@ -404,6 +404,45 @@ def test_polish_three_passes_converges_immediately():
             assert a.text == b.text, label
 
 
+def test_polished_marker_is_stamped_on_repolished_vtt():
+    """polish_vtt_text appends polished=true to the NOTE header so a
+    downstream viewer can tell at a glance the file went through the
+    readability pass. Idempotent — re-polishing an already-marked
+    .vtt leaves the marker in place (not duplicated)."""
+    from app.pipeline.polish import polish_vtt_text
+    src = _make_vtt(
+        ("00:00:10.000", "00:00:10.300", "Yes."),
+        note="Subtitle This auto-subs (en -> fr, mode=audio, "
+             "whisper=large-v3-turbo, provider=nllb)",
+    )
+
+    once = polish_vtt_text(src)
+    twice = polish_vtt_text(once)
+
+    assert "polished=true" in once
+    # Idempotency: only one marker, not "polished=true, polished=true".
+    assert once.count("polished=true") == 1
+    assert twice.count("polished=true") == 1
+
+
+def test_polished_marker_preserves_other_note_fields():
+    """The stamping helper inserts the marker BEFORE the closing
+    parenthesis without disturbing the rest of the header — the
+    Cache Explorer / stats parser still extracts the same lang /
+    mode / whisper / provider."""
+    from app.pipeline.polish import polish_vtt_text
+    src = _make_vtt(
+        ("00:00:10.000", "00:00:10.300", "Yes."),
+        note="Subtitle This auto-subs (en -> fr, mode=audio, "
+             "whisper=large-v3-turbo, provider=nllb)",
+    )
+
+    out = polish_vtt_text(src)
+
+    # Note line carries every original field plus the marker.
+    assert "(en -> fr, mode=audio, whisper=large-v3-turbo, provider=nllb, polished=true)" in out
+
+
 def test_polish_idempotency_holds_when_merge_disabled(monkeypatch):
     """When merge_adjacent_cues is OFF the extend cap reverts to the
     conventional ``cue_separation_seconds`` (more aggressive

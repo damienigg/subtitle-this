@@ -172,6 +172,32 @@ def test_note_header_populates_metadata_fields():
     assert s.provider == "nllb"
 
 
+def test_note_header_polished_marker_is_captured():
+    """The 0.7.20 polish marker in the NOTE line surfaces as
+    ``stats.polished == True``. Absence (legacy entries) leaves
+    ``polished`` at None so the UI can render "unknown" rather than
+    misreport as raw."""
+    s = stats_mod.compute_from_vtt(
+        _vtt(
+            ("00:00:01.000", "00:00:02.000", "hi"),
+            note="Subtitle This auto-subs (en -> fr, mode=audio, "
+                 "whisper=small, provider=nllb, polished=true)",
+        )
+    )
+    assert s.polished is True
+
+
+def test_note_header_without_polished_marker_returns_none():
+    s = stats_mod.compute_from_vtt(
+        _vtt(
+            ("00:00:01.000", "00:00:02.000", "hi"),
+            note="Subtitle This auto-subs (en -> fr, mode=audio, "
+                 "whisper=small, provider=nllb)",
+        )
+    )
+    assert s.polished is None
+
+
 def test_passed_in_overrides_take_precedence_over_note_parsing():
     """When the caller knows mode/detected_lang/etc. authoritatively
     (e.g. straight off a live job), those values shouldn't be silently
