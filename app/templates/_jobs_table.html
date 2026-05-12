@@ -74,6 +74,19 @@
             {% elif j.status == 'canceled' %}
               {% set _final = (j.finished_at - j.started_at) if (j.started_at and j.finished_at) else 0 %}
               <span class="progress-label muted">canceled{% if _final %} · after {{ _final|duration }}{% endif %}</span>
+            {% elif j.status == 'failed' %}
+              {# Failed jobs used to show just "—" here, which lost the
+                 most useful debug signal: WHERE in the pipeline did it
+                 die? The pipeline updates progress_pct + progress_stage
+                 at every phase boundary, and we have started_at +
+                 finished_at, so we can render:
+                   "failed at 65% · transcribing · after 12m 34s"
+                 — the % + stage point at the failing phase, the
+                 duration tells you whether it died early or late. #}
+              {% set _final = (j.finished_at - j.started_at) if (j.started_at and j.finished_at) else 0 %}
+              <span class="progress-label muted">
+                failed at {{ j.progress_pct|round(0)|int }}%{% if j.progress_stage %} · {{ j.progress_stage }}{% endif %}{% if _final %} · after {{ _final|duration }}{% endif %}
+              </span>
             {% elif j.status == 'queued' %}
               <span class="progress-label muted">queued</span>
             {% else %}

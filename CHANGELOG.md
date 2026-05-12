@@ -7,6 +7,24 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.26] — 2026-05-12
+
+### Changed
+
+- **Jobs table Progress column now shows useful info for failed
+  jobs.** Used to render just ``—`` for ``status='failed'``,
+  losing the most useful debug signal: WHERE in the pipeline the
+  job died. Now renders
+  ``failed at X% · <stage> · after Y`` — the percent + stage
+  point at the failing phase, the duration tells you whether it
+  died early or late. Combined with the new clickable error pill
+  (0.7.25), the failure row now answers both "where" (Progress
+  column) and "why" (Error column → traceback page) at a glance.
+
+### Tests
+
+- New ``test_jobs_table_failed_row_shows_pct_and_runtime``.
+
 ## [0.7.25] — 2026-05-12
 
 ### Changed

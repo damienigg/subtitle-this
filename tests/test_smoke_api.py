@@ -809,6 +809,36 @@ def test_error_page_400_when_job_not_failed(client):
     jobs_mod._jobs.clear()
 
 
+def test_jobs_table_failed_row_shows_pct_and_runtime(client):
+    """0.7.26: the Progress column for a failed job used to render
+    just "—", losing the most useful debug signal — WHERE in the
+    pipeline the failure happened. Now it shows
+    "failed at X% · <stage> · after Y" so the operator can tell
+    at a glance whether it died at vocals/STT/translation."""
+    from app import jobs as jobs_mod
+    jobs_mod._jobs.clear()
+    j = jobs_mod.Job(
+        id="job-progress-test", item_id="m1", item_name="Movie",
+        target_lang="fr", provider="nllb", mode="audio",
+        status="failed",
+        error="RuntimeError: VAD blew up",
+        progress_pct=65.0,
+        progress_stage="transcribing",
+        started_at=1_000_000.0,
+        finished_at=1_000_754.0,   # 754 s = 12m 34s
+    )
+    jobs_mod._jobs[j.id] = j
+
+    r = client.get("/partials/jobs")
+    assert r.status_code == 200
+    html = r.text
+    assert "failed at 65%" in html
+    assert "transcribing" in html
+    # 754 s → "12m 34s" via the duration filter
+    assert "after 12m" in html
+    jobs_mod._jobs.clear()
+
+
 def test_error_page_handles_pre_0_7_25_job_without_traceback(client):
     """A failed job loaded from disk that was recorded before 0.7.25
     won't have error_detail — the page still renders, just shows the
