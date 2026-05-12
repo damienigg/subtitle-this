@@ -171,17 +171,38 @@ def _extend_min_duration(cues: list[Cue]) -> list[Cue]:
       - settings.min_cue_duration_seconds (absolute floor)
       - len(text) * settings.min_seconds_per_char (reading-speed floor)
     Extends ``end`` forward only — start stays aligned with the
-    audio onset. Capped by the next cue's start minus
-    settings.cue_separation_seconds so two cues never overlap.
+    audio onset. Capped by the next cue's start so two cues never
+    overlap.
 
-    Edge case: if the next cue starts so soon that even meeting the
-    separation minimum isn't possible (i.e. start + separation <=
-    cue.end already), we leave the cue alone — extending would
-    create an overlap, and shortening would silently drop content.
+    Idempotency guard (0.7.19): when merge is enabled, the cap is
+    NOT just ``next.start - cue_separation_seconds``. It's the
+    stricter ``next.start - max_gap_to_merge_seconds - epsilon``.
+    Without this, a cue extended right up to the next one would
+    sit at a gap of ``cue_separation`` (default 0.05 s), which is
+    below ``max_gap_to_merge`` (default 0.3 s) — meaning a second
+    polish pass would see two cues that the FIRST pass deliberately
+    chose NOT to merge (because their original gap was too big)
+    AND would now merge them on the second pass.
+
+    The extra gap kept here is the price of idempotency: a cue
+    might extend to e.g. 10.7 s instead of 10.95 s when the next
+    cue starts at 11.0 s. That preserves the "these are two
+    separate utterances, not a merged one" decision through any
+    number of re-polish passes.
+
+    When merge is disabled, the conventional ``cue_separation``
+    cap applies — there's no merge-decision to preserve.
     """
     min_dur = float(settings.min_cue_duration_seconds)
     sec_per_char = float(settings.min_seconds_per_char)
     sep = float(settings.cue_separation_seconds)
+    max_gap = float(settings.max_gap_to_merge_seconds)
+    merge_enabled = bool(settings.merge_adjacent_cues)
+    # 1 ms float-arithmetic safety margin. The merge predicate is
+    # strict-less-than, so equality at the boundary is already safe;
+    # the epsilon protects against 10.7 + 0.3 not being exactly 11.0
+    # in binary floating-point.
+    EPSILON = 0.001
 
     n = len(cues)
     for i, cue in enumerate(cues):
@@ -191,7 +212,13 @@ def _extend_min_duration(cues: list[Cue]) -> list[Cue]:
             continue
         new_end = cue.start + desired
         if i + 1 < n:
-            cap = cues[i + 1].start - sep
+            next_start = cues[i + 1].start
+            cap_no_overlap = next_start - sep
+            if merge_enabled:
+                cap_idempotent = next_start - max_gap - EPSILON
+                cap = min(cap_no_overlap, cap_idempotent)
+            else:
+                cap = cap_no_overlap
             new_end = min(new_end, cap)
         if new_end > cue.end:
             cue.end = new_end

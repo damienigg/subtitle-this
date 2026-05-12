@@ -315,3 +315,113 @@ def test_polish_vtt_text_is_near_idempotent():
 def test_polish_vtt_text_empty_passes_through():
     from app.pipeline.polish import polish_vtt_text
     assert polish_vtt_text("WEBVTT\n\n") == "WEBVTT\n\n"
+
+
+# ── Idempotency invariants (0.7.19) ────────────────────────────────────────
+
+
+def test_extend_leaves_enough_gap_to_prevent_second_pass_merge():
+    """Regression for the 0.7.17/0.7.18 drift: two non-mergeable cues
+    (gap 0.7 s, above the 0.3 s threshold) used to have their gap
+    crushed to ``cue_separation_seconds`` (0.05 s) by the extend
+    pass — which made a second polish run merge them spuriously.
+
+    Post-fix: the extend cap leaves at least
+    ``max_gap_to_merge_seconds + epsilon`` of space when merge is
+    enabled, so the no-merge decision survives any number of
+    re-polish passes."""
+    cues = [
+        _cue(10.0, 10.3, "Yes."),
+        _cue(11.0, 11.5, "No."),
+    ]
+
+    out = polish_cues(cues)
+
+    # Two cues survived (no merge on the first pass either).
+    assert len(out) == 2
+    # The new gap must be at least max_gap_to_merge_seconds (0.3) —
+    # below that, a second pass would merge them. We use >= 0.3
+    # rather than > 0.3 because the merge predicate is strict-less-
+    # than: equality is safe.
+    gap = out[1].start - out[0].end
+    assert gap >= 0.3, (
+        f"Extend pass shrunk the gap to {gap:.3f} s — below "
+        f"max_gap_to_merge_seconds (0.3). Re-polish would merge "
+        "these cues despite the first pass deciding not to."
+    )
+
+
+def test_polish_is_idempotent_when_extend_borders_max_gap():
+    """The scenario that broke idempotency before 0.7.19: two cues
+    with a gap just above the merge threshold, where the first cue
+    is short enough that extend wants to push its end close to the
+    next cue. Pre-fix, the second polish pass would merge them;
+    post-fix, two passes produce the same output."""
+    cues = [
+        _cue(10.0, 10.3, "Yes."),
+        _cue(11.0, 11.5, "No."),
+    ]
+
+    once = polish_cues(cues)
+    twice = polish_cues(once)
+
+    assert len(once) == len(twice), (
+        f"Polish is not idempotent: pass 1 → {len(once)} cues, "
+        f"pass 2 → {len(twice)} cues"
+    )
+    # Boundary-by-boundary comparison. Floating-point exact equality
+    # is fine here because polish operations are simple arithmetic
+    # on millisecond-rounded values.
+    for a, b in zip(once, twice):
+        assert abs(a.start - b.start) < 0.001
+        assert abs(a.end - b.end) < 0.001
+        assert a.text == b.text
+
+
+def test_polish_three_passes_converges_immediately():
+    """Stronger guarantee: not just that pass-2 matches pass-1, but
+    that pass-N for any N matches pass-1. Catches a class of
+    "converges in 3 passes" bugs that pass-2-only assertions would
+    miss."""
+    cues = [
+        _cue(0.0, 0.4, "Short."),
+        _cue(0.6, 0.9, "Short again."),
+        _cue(1.5, 1.8, "And one more."),
+        _cue(10.0, 10.3, "Far away."),
+        _cue(11.0, 11.5, "Just out of range."),
+    ]
+
+    pass1 = polish_cues(cues)
+    pass2 = polish_cues(pass1)
+    pass3 = polish_cues(pass2)
+
+    # Pass 2 and Pass 3 must equal Pass 1 — boundary by boundary.
+    for label, after in (("pass2", pass2), ("pass3", pass3)):
+        assert len(after) == len(pass1), f"{label} length differs"
+        for a, b in zip(pass1, after):
+            assert abs(a.start - b.start) < 0.001, label
+            assert abs(a.end - b.end) < 0.001, label
+            assert a.text == b.text, label
+
+
+def test_polish_idempotency_holds_when_merge_disabled(monkeypatch):
+    """When merge_adjacent_cues is OFF the extend cap reverts to the
+    conventional ``cue_separation_seconds`` (more aggressive
+    extension is fine — no merge-decision to preserve). Idempotency
+    must still hold in that mode."""
+    from app.config import settings
+    monkeypatch.setattr(
+        settings, "_overrides",
+        {**settings._overrides, "merge_adjacent_cues": False},
+    )
+    cues = [
+        _cue(10.0, 10.3, "Yes."),
+        _cue(11.0, 11.5, "No."),
+    ]
+
+    once = polish_cues(cues)
+    twice = polish_cues(once)
+
+    for a, b in zip(once, twice):
+        assert a.end == b.end
+        assert a.start == b.start

@@ -7,6 +7,48 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.19] — 2026-05-12
+
+### Fixed
+
+- **Polish was not idempotent under re-polish.** The extend pass
+  capped each cue's end at ``next.start - cue_separation_seconds``
+  (0.05 s), which left a 50 ms gap to the next cue. The merge
+  predicate uses ``gap < max_gap_to_merge_seconds`` (0.3 s by
+  default), so the FIRST polish would correctly not-merge two
+  cues that started 0.7 s apart; but the new 50 ms post-extend
+  gap was below the merge threshold, so the SECOND polish would
+  merge them anyway. The result drifted toward more-merged
+  output over multiple re-polish clicks.
+
+  Fix: when merge is enabled, the extend cap is now
+  ``next.start - max_gap_to_merge_seconds - epsilon`` instead of
+  ``next.start - cue_separation_seconds``. This preserves the
+  first pass's no-merge decision through any number of
+  re-polish passes. Cost: cues that previously extended right up
+  to the next one (50 ms gap) now leave a 300 ms gap when
+  defaults are in effect. The readability gain is preserved
+  (short cues still get the full reading-speed extension where
+  possible); only the cap shifts.
+
+  When merge is disabled (``merge_adjacent_cues=false``), the
+  conventional ``cue_separation_seconds`` cap applies — there's
+  no merge decision to preserve.
+
+### Tests
+
+- 4 new tests in `tests/test_polish.py`:
+  - extend leaves at least max_gap_to_merge between
+    non-mergeable neighbors;
+  - polish is idempotent on the canonical drift scenario
+    (two cues just out of merge range);
+  - three passes converge to pass-1's output (rules out
+    "converges in N>1 passes" bugs);
+  - idempotency holds when merge is disabled too.
+  All 4 verified to fail on pre-fix code with the exact
+  diagnostic ("Polish is not idempotent: pass 1 → 2 cues,
+  pass 2 → 1 cues").
+
 ## [0.7.18] — 2026-05-12
 
 ### Added
