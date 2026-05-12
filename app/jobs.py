@@ -181,6 +181,27 @@ def list_jobs(limit: int = 50) -> list[Job]:
     return sorted(snapshot, key=lambda j: j.queued_at, reverse=True)[:limit]
 
 
+def clear_finished_jobs() -> int:
+    """Drop every job whose status is terminal (succeeded / failed / canceled)
+    from the in-memory dict and persist the trimmed list. Returns the count of
+    jobs removed.
+
+    Running, queued, and canceling jobs are preserved — clearing them mid-flight
+    would orphan the runner coroutine. The user can hit cancel first, then clear
+    once the job lands in `canceled`.
+
+    Called by the dashboard's "Clear finished jobs" button so users can keep
+    the persistent jobs table from growing unbounded across weeks of runs."""
+    terminal = {"succeeded", "failed", "canceled"}
+    with _jobs_lock:
+        to_drop = [jid for jid, j in _jobs.items() if j.status in terminal]
+        for jid in to_drop:
+            del _jobs[jid]
+    if to_drop:
+        _persist()
+    return len(to_drop)
+
+
 def get_job(job_id: str) -> Job | None:
     return _jobs.get(job_id)
 

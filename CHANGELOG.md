@@ -7,6 +7,38 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-05-12
+
+Two operator-facing additions that came out of the Inception
+post-mortem: a way to disable region-packing without editing
+config files, and a way to keep the persistent jobs table from
+growing unbounded.
+
+### Added
+
+- New Settings field `stt_region_packing` (Speech-to-Text section,
+  OpenVINO-only). The setting itself has existed in `config.py`
+  since 0.6.0 but was never exposed in the UI. Turning it off is
+  the first thing to try when dialog goes missing in long-film
+  output — packing multiple short speech regions into one Whisper
+  window with 0.5 s silence pads can cause legitimate cues to be
+  dropped if Whisper's predicted timestamp drifts into a pad zone.
+  Cost of OFF: 1.5-3× more iGPU compute on dialog-heavy films.
+- "Clear finished" button in the Jobs table header. Removes all
+  jobs in terminal states (succeeded / failed / canceled) from
+  both the in-memory list and the `jobs.json` persistence so the
+  dashboard table doesn't grow unbounded across weeks of runs.
+  Running, queued, and canceling jobs are left alone — clearing
+  those mid-flight would orphan the runner coroutine. Backed by
+  `POST /api/jobs/clear-finished` (returns `{"cleared": N}`).
+
+### Tests
+
+- 3 new tests in `tests/test_jobs_persistence.py` covering the
+  clear-finished behavior: terminal-state pruning + disk
+  persistence, no-op when nothing to drop, and the canceling-job
+  preservation invariant.
+
 ## [0.7.2] — 2026-05-12
 
 Fixes a long-standing STT timestamp bug that was masked by the

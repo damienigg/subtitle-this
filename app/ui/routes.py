@@ -336,6 +336,16 @@ _FIELD_META: list[dict[str, Any]] = [
          "Watch `docker logs subtitle-this` after a model load: the line "
          "'[openvino] whisper:…  selected=GPU' confirms what was actually picked."
      )},
+    {"key": "stt_region_packing", "section": "Speech-to-Text",
+     "label": "Region packing (OpenVINO)", "type": "checkbox",
+     "show_if": {"field": "whisper_backend", "equals": "openvino"},
+     "help": "Pack multiple short speech regions into one 30 s Whisper "
+             "window separated by 0.5 s silence pads. Cuts iGPU compute "
+             "1.5-3× on dialog-heavy films but can drop legitimate cues "
+             "when Whisper's predicted timestamp drifts into a pad zone. "
+             "Turn OFF if you're seeing missing dialogue — each speech "
+             "region then gets its own window (slower but no pad-drop "
+             "risk). Ignored when whisper_backend = cpu."},
 
     # ── Translation (provider chooser + provider-specific params) ─────────────
     # The provider chooser lives at the top of this section so it gates the

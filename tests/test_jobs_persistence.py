@@ -270,3 +270,61 @@ def test_load_persisted_is_noop_when_no_file():
     and the in-memory dict must remain empty."""
     jobs.load_persisted()
     assert len(jobs._jobs) == 0
+
+
+# ── clear_finished_jobs ───────────────────────────────────────────────────
+
+
+def test_clear_finished_drops_terminal_and_persists():
+    """The dashboard "Clear finished jobs" button removes succeeded /
+    failed / canceled entries and persists the trimmed list so a process
+    restart doesn't bring them back."""
+    survivors = [
+        _make_job(id="r-running", status="running"),
+        _make_job(id="q-queued", status="queued"),
+        _make_job(id="c-canceling", status="canceling"),
+    ]
+    to_drop = [
+        _make_job(id="s-ok", status="succeeded"),
+        _make_job(id="f-bad", status="failed", error="OOM"),
+        _make_job(id="x-canceled", status="canceled"),
+    ]
+    for j in survivors + to_drop:
+        jobs._jobs[j.id] = j
+
+    n = jobs.clear_finished_jobs()
+
+    assert n == 3
+    assert set(jobs._jobs.keys()) == {"r-running", "q-queued", "c-canceling"}
+    # Disk reflects the trimmed list — the next process restart must not
+    # resurrect the cleared entries.
+    persisted = jobs_store.load_jobs()
+    assert {j.id for j in persisted} == {"r-running", "q-queued", "c-canceling"}
+
+
+def test_clear_finished_returns_zero_when_nothing_to_drop():
+    """No terminal jobs present — clear is a clean no-op, no disk write
+    needed (the function only persists when something actually changed)."""
+    jobs._jobs[_make_job(id="r1", status="running").id] = _make_job(
+        id="r1", status="running",
+    )
+    jobs._jobs[_make_job(id="q1", status="queued").id] = _make_job(
+        id="q1", status="queued",
+    )
+
+    n = jobs.clear_finished_jobs()
+
+    assert n == 0
+    assert set(jobs._jobs.keys()) == {"r1", "q1"}
+
+
+def test_clear_finished_leaves_canceling_jobs_alone():
+    """A canceling job has a runner coroutine still ticking — deleting it
+    would orphan that coroutine. The user must wait for it to land in
+    'canceled' before clearing it."""
+    jobs._jobs["x"] = _make_job(id="x", status="canceling")
+
+    n = jobs.clear_finished_jobs()
+
+    assert n == 0
+    assert "x" in jobs._jobs

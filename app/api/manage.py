@@ -343,3 +343,15 @@ def cancel_job(job_id: str) -> JobView:
         raise HTTPException(404, f"job {job_id!r} not found")
     j.request_cancel()
     return _job_view(j)
+
+
+@router.post("/jobs/clear-finished")
+def clear_finished_jobs() -> dict:
+    """Remove all jobs in terminal states (succeeded / failed / canceled) from
+    both the in-memory list and the on-disk persistence. Running, queued, and
+    canceling jobs are left alone — clearing those mid-flight would orphan the
+    runner coroutine.
+
+    Returns ``{"cleared": N}`` where N is how many entries were removed."""
+    n = jobs.clear_finished_jobs()
+    return {"cleared": n}

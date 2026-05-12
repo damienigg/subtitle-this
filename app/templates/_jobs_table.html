@@ -4,7 +4,21 @@
          hx-get="/partials/jobs"
          hx-trigger="every 3s"
          hx-swap="outerHTML">
-  <h2>Jobs</h2>
+  {# Header row: title on the left, "Clear finished" on the right when there
+     are any terminal-state jobs to clear. The button is hidden entirely when
+     the list is empty or contains only live (queued/running/canceling) jobs
+     so the UI doesn't suggest an action that would do nothing. #}
+  {% set _clearable = jobs | selectattr('status', 'in', ['succeeded','failed','canceled']) | list %}
+  <div class="jobs-header">
+    <h2>Jobs</h2>
+    {% if _clearable %}
+      <button type="button" class="secondary outline clear-finished-btn"
+              data-count="{{ _clearable|length }}"
+              title="Remove all succeeded / failed / canceled jobs from the table">
+        Clear finished ({{ _clearable|length }})
+      </button>
+    {% endif %}
+  </div>
   {% if not jobs %}
     <p><em>No jobs yet. Open the <a href="/library">Library</a> and click <strong>▶ Subtitle now</strong> on a row, or stage a batch via <strong>+ Batch</strong>.</em></p>
   {% else %}
@@ -97,4 +111,20 @@
       });
     </script>
   {% endif %}
+  <script>
+    // "Clear finished" lives outside the jobs-table conditional above, so we
+    // wire it up on every render — when there's nothing to clear the button
+    // isn't in the DOM and querySelectorAll just yields an empty list.
+    document.querySelectorAll('.clear-finished-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const n = btn.dataset.count;
+        if (!confirm('Clear ' + n + ' finished job(s) from the table? Running and queued jobs are kept.')) return;
+        btn.disabled = true;
+        btn.textContent = '…';
+        try {
+          await fetch('/api/jobs/clear-finished', { method: 'POST' });
+        } catch (e) { /* HTMX will re-render with the latest state on the next 3 s tick */ }
+      });
+    });
+  </script>
 </section>

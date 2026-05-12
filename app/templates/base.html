@@ -75,6 +75,18 @@
     .status-pill.canceled { background: var(--bt-muted-bg); color: var(--bt-muted-fg); }
     .status-pill.muted { background: var(--bt-muted-bg); color: var(--bt-muted-fg); }
 
+    /* Jobs section header — keeps the h2 and the "Clear finished" button on
+       the same baseline. The button right-aligns and stays optically smaller
+       than the heading so it reads as a maintenance action, not a primary CTA. */
+    .jobs-header {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 1rem; flex-wrap: wrap;
+    }
+    .jobs-header > h2 { margin-bottom: 0; }
+    .clear-finished-btn {
+      font-size: 0.85em; padding: 0.3rem 0.7rem;
+    }
+
     /* Progress bar — used in the jobs table and the batch panel summary. The
        label sits on top of the filled bar (centered in the wrap). Bar width
        is the filled portion; the unfilled portion is the wrap's background. */
