@@ -202,11 +202,15 @@ def test_transcript_cache_hit_skips_audio_extract_and_whisper(monkeypatch, tmp_p
 
     # Seed the transcript cache with a result that would normally come
     # from a previous run's Whisper pass.
+    # Gap of 5 s between the cues so the 0.7.17 readability-polish
+    # pass (extend + merge) doesn't collapse them into one — the
+    # assertion below is "the cached cue count flows through", not
+    # "polish doesn't run".
     seeded = TranscriptionResult(
         detected_language="en",
         cues=[
             Cue(id=0, start=0.0, end=2.0, text="hello"),
-            Cue(id=1, start=2.0, end=4.0, text="world"),
+            Cue(id=1, start=7.0, end=9.0, text="world"),
         ],
     )
     content_fp = cache_mod.content_fingerprint(media)

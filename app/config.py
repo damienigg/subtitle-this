@@ -143,6 +143,42 @@ class _EnvSettings(BaseSettings):
     max_line_chars: int = Field(42, ge=10, le=120)
     max_lines_per_cue: int = Field(2, ge=1, le=4)
 
+    # ── Readability polish (0.7.17+) ─────────────────────────────────
+    # Whisper outputs tight per-utterance timing — a "Yes." pronounced
+    # in 0.3 s gets a 0.3 s cue. Pro subtitlers enforce minimum
+    # display durations so viewers can actually read the text. These
+    # knobs apply a final pass that (a) extends cues that are too
+    # short, (b) optionally merges adjacent cues that are visually
+    # connected. Comparison run on Inception showed Whisper produced
+    # 42.8 % of cues under 1 s; the reference SRT had 0 cues under
+    # 1 s. After polish with defaults, the generated .vtt distribution
+    # matches the SRT shape much more closely.
+    polish_enabled: bool = True
+    # Minimum display duration in seconds, regardless of text length.
+    # 1.2 s is the lower end of professional subtitling norms (BBC
+    # subtitle guidelines: 0.7-1.5 s minimum; Netflix: 5/6 sec for
+    # one-syllable utterances). Cues below this get their end
+    # extended (never the start — keeps sync with the audio onset).
+    min_cue_duration_seconds: float = Field(1.2, ge=0.0, le=5.0)
+    # Reading-speed cap: each character claims at least this many
+    # seconds of display time. 0.045 ≈ 22 chars/second, a relaxed
+    # reading speed. A 40-char two-line cue would need 40 × 0.045 =
+    # 1.8 s minimum even if it was uttered faster.
+    min_seconds_per_char: float = Field(0.045, ge=0.0, le=0.2)
+    # Merge adjacent short cues that fit together visually. Two cues
+    # qualify when (a) the gap between them is under
+    # max_gap_to_merge_seconds, (b) the combined text fits within
+    # max_line_chars × max_lines_per_cue, (c) the combined display
+    # duration stays under max_merged_cue_duration_seconds.
+    merge_adjacent_cues: bool = True
+    max_gap_to_merge_seconds: float = Field(0.3, ge=0.0, le=2.0)
+    max_merged_cue_duration_seconds: float = Field(7.0, ge=1.0, le=15.0)
+    # Minimum gap to keep between consecutive cues after polish, so
+    # an extended cue's end doesn't bleed onto the next cue's start.
+    # 0.05 s ≈ 1 frame at 24 fps — invisible but enough for renderers
+    # that won't display two overlapping cues cleanly.
+    cue_separation_seconds: float = Field(0.05, ge=0.0, le=1.0)
+
     # Defaults applied when the user clicks "Subtitle this" on a row or
     # "Subtitle selected" on the multi-select batch in the web UI without
     # overriding per-item.

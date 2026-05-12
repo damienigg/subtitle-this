@@ -7,6 +7,51 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.17] — 2026-05-12
+
+Readability polish — addresses the user complaint that generated
+subtitles "flash by too fast to read". The Inception comparison
+showed 42.8 % of cues under 1 second in the generated .vtt vs
+0 % in the pro reference SRT; this release closes that gap.
+
+### Added
+
+- New module `app/pipeline/polish.py` with a two-pass cue
+  post-processor that runs between translation and the .vtt writer:
+  - **Extend pass**: every cue gets a minimum display duration
+    equal to ``max(min_cue_duration_seconds, char_count ×
+    min_seconds_per_char)``. Cues below the floor are extended
+    forward (``end`` moves; ``start`` never does — preserves
+    audio-onset sync). Capped to leave ``cue_separation_seconds``
+    between consecutive cues so two subtitles never overlap.
+  - **Merge pass**: adjacent cues with a tight gap and combined
+    text that fits the line-wrap budget collapse into one. The
+    flickery "Yes." / "Yes." / "Yes." back-and-forth sequences
+    Whisper produces on quick dialog get smoothed into one
+    readable subtitle.
+- 7 new settings in the Subtitles section:
+  ``polish_enabled`` (master, default ON), ``min_cue_duration_seconds``
+  (1.2), ``min_seconds_per_char`` (0.045 ≈ 22 chars/sec),
+  ``merge_adjacent_cues`` (default ON), ``max_gap_to_merge_seconds``
+  (0.3), ``max_merged_cue_duration_seconds`` (7.0),
+  ``cue_separation_seconds`` (0.05). Each carries an inline help
+  text explaining the trade-off and a ``show_if`` gate so
+  disabling the master switch collapses the sub-knobs.
+
+### Tests
+
+- 15 new tests in `tests/test_polish.py` covering each invariant:
+  short cues extend to the floor, long cues pass through, the
+  cap-by-next-cue never produces overlaps, char-based reading
+  speed wins over the absolute floor when text is long, merge
+  respects the gap / chars / duration ceilings, three-cue
+  chained merge collapses correctly, ids re-sequence after
+  merge.
+- `test_transcript_cache_hit_skips_audio_extract_and_whisper`
+  updated: seeded cues now have a 5 s gap so the polish pass
+  doesn't merge them and the cache-hit count assertion still
+  holds.
+
 ## [0.7.16] — 2026-05-12
 
 App-update awareness in the dashboard. The app connects to its own

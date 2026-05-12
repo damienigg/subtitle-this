@@ -593,6 +593,66 @@ _FIELD_META: list[dict[str, Any]] = [
     {"key": "max_lines_per_cue", "section": "Subtitles",
      "label": "Max lines per cue", "type": "number",
      "help": "Overflow merges into the last line — never drops content."},
+    {"key": "polish_enabled", "section": "Subtitles",
+     "label": "Readability polish (extend short cues, merge fragments)",
+     "type": "checkbox",
+     "help": "Whisper outputs tight per-utterance timing — a 0.3 s "
+             "'Yes.' gets a 0.3 s cue, far too brief to read. With "
+             "this ON (default), a final pass extends cues to a "
+             "minimum display duration (capped to never overlap the "
+             "next cue) and optionally merges adjacent fragments "
+             "that visually read as one subtitle. Inception "
+             "comparison: raw Whisper had 42.8 % of cues under 1 s, "
+             "the pro reference SRT had 0. Defaults match the pro "
+             "shape closely. Turn OFF only if you want the raw "
+             "Whisper timing (e.g. for downstream tooling that "
+             "does its own readability pass)."},
+    {"key": "min_cue_duration_seconds", "section": "Subtitles",
+     "label": "Min display duration (s)", "type": "number",
+     "show_if": {"field": "polish_enabled", "equals": "true"},
+     "help": "Lower bound on how long any cue stays on screen, "
+             "regardless of utterance length. 1.2 s is the lower "
+             "end of pro subtitling norms; BBC guidelines allow "
+             "0.7-1.5 s, Netflix expects 5/6 s for single syllables. "
+             "Shorter cues are extended forward (never the start — "
+             "audio onset stays in sync)."},
+    {"key": "min_seconds_per_char", "section": "Subtitles",
+     "label": "Min reading speed (seconds per character)",
+     "type": "number",
+     "show_if": {"field": "polish_enabled", "equals": "true"},
+     "help": "Reading-speed cap. 0.045 s/char ≈ 22 chars/second, a "
+             "relaxed pace. A 40-character two-line cue claims at "
+             "least 40 × 0.045 = 1.8 s. Tighten (smaller value) for "
+             "faster readers, loosen for slower."},
+    {"key": "merge_adjacent_cues", "section": "Subtitles",
+     "label": "Merge adjacent short cues", "type": "checkbox",
+     "show_if": {"field": "polish_enabled", "equals": "true"},
+     "help": "When two consecutive cues are visually one subtitle "
+             "(small gap between them, combined text fits in the "
+             "line-wrap budget), collapse them into one. Trims the "
+             "'flickery sequence of short fragments' effect Whisper "
+             "produces on quick back-and-forth dialog."},
+    {"key": "max_gap_to_merge_seconds", "section": "Subtitles",
+     "label": "Max gap to merge (s)", "type": "number",
+     "show_if": {"field": "merge_adjacent_cues", "equals": "true"},
+     "help": "Two cues are merge candidates only when the silence "
+             "between them is shorter than this. 0.3 s = a natural "
+             "breath in conversation. Above this they're treated as "
+             "separate utterances."},
+    {"key": "max_merged_cue_duration_seconds", "section": "Subtitles",
+     "label": "Max merged cue duration (s)", "type": "number",
+     "show_if": {"field": "merge_adjacent_cues", "equals": "true"},
+     "help": "Hard cap on how long a single merged cue can be on "
+             "screen. Beyond this, a subtitle reads as cluttered "
+             "rather than coherent. 7 s is the standard upper bound."},
+    {"key": "cue_separation_seconds", "section": "Subtitles",
+     "label": "Min gap between cues (s)", "type": "number",
+     "show_if": {"field": "polish_enabled", "equals": "true"},
+     "help": "Minimum silence kept between consecutive cues after "
+             "the polish pass extends durations. 0.05 s ≈ 1 frame "
+             "at 24 fps — invisible to the eye but prevents two "
+             "subtitles overlapping in renderers that handle the "
+             "overlap case clumsily."},
 
     # ── Resource safety (advanced — sits at the bottom of the form) ─────────
     # These caps prevent a long film + heavy mode from consuming all host

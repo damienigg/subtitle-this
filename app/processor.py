@@ -411,6 +411,17 @@ def process(
         transcription.pipeline_metrics = pm_mod.PipelineMetrics()
     transcription.pipeline_metrics.translation = translation_metrics
 
+    # ── Readability polish ──────────────────────────────────────────────
+    # Raw Whisper timing produces ~40 % of cues under 1 s on a typical
+    # talky film — too brief to read. The polish pass extends short
+    # cues (capped to never overlap the next one), and optionally
+    # merges adjacent fragments that visually read as one subtitle.
+    # No-op when settings.polish_enabled is False; otherwise gated
+    # by per-knob settings. Operates on the translated cue list so
+    # reading-speed math uses the target-language text length.
+    from app.pipeline.polish import polish_cues
+    translated = polish_cues(translated)
+
     vtt = to_webvtt(
         translated,
         header_note=(
