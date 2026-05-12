@@ -7,6 +7,54 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.8] — 2026-05-12
+
+Jobs table rework + Quality Score on the stats page.
+
+### Added
+
+- **Quality Score** (new module `app/quality.py`). 0-100 composite
+  derived from the stats record + pipeline metrics, mapped to a
+  5-star rating and an A-F letter grade. Each penalty is tied to
+  a specific known pathology with its own warn-vs-critical
+  threshold:
+  - Compressed timestamps (very_short_pct &gt; 15/25 %)
+  - Region-packing pad-drops (drop_pct &gt; 5/10/20 %)
+  - VAD under-detection (speech_ratio &lt; 30/20 %)
+  - VAD trimming short words (short_region_pct &gt; 25/40 %)
+  - Whisper hallucinations (degen_drops/100 cues &gt; 5/20)
+  - Empty translations (empty_pct &gt; 5/10 %)
+  - Duplicate translations (dup_pct &gt; 15/30 %)
+  - Cue count mismatch (in ≠ out by more than 5 %)
+  The factor breakdown is rendered as a table on the stats page so
+  the user sees WHICH pathology cost which points — actionable
+  rather than just diagnostic.
+- Quality card rendered at the top of the stats page with a big
+  score, 5 stars, letter grade, color-coded left border, and the
+  per-factor table below.
+- New **STT** column in the Jobs table — shows the Whisper model
+  that was active when the job was submitted. New
+  `Job.whisper_model` field, snapshotted at submission so the
+  table stays accurate even if the user changes the setting
+  between submission and completion.
+- **Output cell** is now a clickable pill (▸ vtt) that opens the
+  .vtt in a new browser tab via the new
+  ``GET /api/jobs/{job_id}/output.vtt`` endpoint. Defends against
+  arbitrary-path requests by only serving the path the runner
+  recorded as the job's own output. No more SSH-and-cat.
+
+### Changed
+
+- Jobs table column **Provider** renamed to **Translation** —
+  STT is now its own column so labeling needs to disambiguate.
+
+### Tests
+
+- 17 new tests in `tests/test_quality.py` covering every penalty
+  threshold (each at its trigger value + one below), the
+  multiple-pathology compounding case (Inception profile),
+  zero-clamp, grade-band boundaries, and the JSON serializer.
+
 ## [0.7.7] — 2026-05-12
 
 Three operator-driven additions out of the post-mortem feedback

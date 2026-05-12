@@ -74,6 +74,14 @@
     .status-pill.canceling { background: var(--bt-warn-bg); color: var(--bt-warn-fg); }
     .status-pill.canceled { background: var(--bt-muted-bg); color: var(--bt-muted-fg); }
     .status-pill.muted { background: var(--bt-muted-bg); color: var(--bt-muted-fg); }
+    /* Output cell — pill that opens the .vtt in a new browser tab via
+       /api/jobs/{id}/output.vtt. Styled like the muted pills around it
+       but clickable, so it reads as "actionable" rather than just label. */
+    a.output-pill {
+      background: var(--bt-active-bg); color: var(--bt-active-fg);
+      text-decoration: none;
+    }
+    a.output-pill:hover { filter: brightness(1.12); }
 
     /* Tiny shared utilities — used in the Cache Explorer (and harmless if
        reused elsewhere). Kept here rather than in a separate file because
@@ -81,6 +89,58 @@
     .muted { color: var(--pico-muted-color); }
     .small { font-size: 0.85em; }
     .warn-text { color: var(--bt-warn-fg); }
+
+    /* Quality score card on the Cache Stats page. The big score on
+       the left, summary + breakdown on the right. Border color shifts
+       with the letter grade so it reads as a status pill at the page
+       level even when the user just scrolls past. */
+    .quality-card {
+      border-left: 6px solid var(--bt-active-bg);
+      padding: 0.6rem 1rem;
+      background: var(--pico-card-background-color);
+      border-radius: 0.4rem;
+      margin: 1rem 0 1.5rem;
+    }
+    .quality-card.quality-grade-A { border-left-color: var(--bt-ok-bg); }
+    .quality-card.quality-grade-B { border-left-color: var(--bt-active-bg); }
+    .quality-card.quality-grade-C { border-left-color: var(--bt-info-bg); }
+    .quality-card.quality-grade-D { border-left-color: var(--bt-warn-bg); }
+    .quality-card.quality-grade-F { border-left-color: var(--bt-err-bg); }
+
+    .quality-header {
+      display: flex; gap: 1.5rem; align-items: center; flex-wrap: wrap;
+      margin-bottom: 0.6rem;
+    }
+    .quality-score-block { text-align: center; min-width: 7rem; }
+    .quality-score-big {
+      font-size: 3rem; font-weight: 600; line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .quality-score-suffix {
+      font-size: 1rem; color: var(--pico-muted-color); font-weight: 400;
+    }
+    .quality-stars {
+      font-size: 1.1rem; letter-spacing: 0.1rem; color: var(--bt-warn-bg);
+      margin-top: 0.2rem;
+    }
+    .quality-grade-letter {
+      margin-left: 0.5rem; font-weight: 700; color: var(--pico-color);
+      font-family: var(--pico-font-family);
+    }
+    .quality-summary-block { flex: 1; min-width: 16rem; }
+    .quality-summary-block h2 { margin-bottom: 0.2rem; }
+    .quality-summary-block p { margin: 0; }
+
+    /* Severity coloring for the per-factor table row pills. */
+    .severity-pill {
+      display: inline-block; padding: 0.05rem 0.45rem; border-radius: 0.3rem;
+      font-size: 0.72em; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.05em;
+      margin-right: 0.4rem;
+    }
+    .severity-pill.severity-info     { background: var(--bt-info-bg); color: var(--bt-info-fg); }
+    .severity-pill.severity-warn     { background: var(--bt-warn-bg); color: var(--bt-warn-fg); }
+    .severity-pill.severity-critical { background: var(--bt-err-bg);  color: var(--bt-err-fg); }
 
     /* Key-value tables on the Cache Stats page. Left column is a fixed-
        width label, right column is the value. No row separators because

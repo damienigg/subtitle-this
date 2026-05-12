@@ -55,6 +55,10 @@ class Job:
     error: str | None = None
     output_path: str | None = None
     cue_count: int | None = None
+    # Whisper model the job ran with — snapshotted at submission time
+    # so the jobs table can show "what STT did this use" even if the
+    # user changed the setting between submission and completion.
+    whisper_model: str | None = None
     queued_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -214,6 +218,7 @@ def submit(
     provider: str,
     mode: str,
     runner: Callable[[Job], Awaitable[None]],
+    whisper_model: str | None = None,
 ) -> Job:
     """Queue a job; runner does the actual work and updates the job in place.
 
@@ -227,6 +232,7 @@ def submit(
         target_lang=target_lang,
         provider=provider,
         mode=mode,
+        whisper_model=whisper_model,
     )
     with _jobs_lock:
         _jobs[job.id] = job

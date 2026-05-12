@@ -214,6 +214,7 @@ def submit_item_job(
         provider=provider,
         mode=job_mode,
         runner=runner,
+        whisper_model=settings.whisper_model,
     )
 
 
@@ -334,6 +335,47 @@ def get_job(job_id: str) -> JobView:
     if not j:
         raise HTTPException(404, f"job {job_id!r} not found")
     return _job_view(j)
+
+
+@router.get("/jobs/{job_id}/output.vtt")
+def get_job_output(job_id: str):
+    """Stream the .vtt produced by this job back to the browser as
+    text/vtt. The Jobs table's Output pill links to this so clicking
+    it opens the subtitle in a new tab — no need for the user to SSH
+    or share-mount the NAS folder.
+
+    Defense: we only serve the path the JOB recorded as its own
+    output. A request for an arbitrary path is rejected because
+    output_path is set by the runner from a server-controlled
+    template (``_vtt_path(media, target_lang, mode)``), and we
+    never trust a user-supplied filename here."""
+    from pathlib import Path
+    from fastapi.responses import Response
+    j = jobs.get_job(job_id)
+    if not j:
+        raise HTTPException(404, f"job {job_id!r} not found")
+    if not j.output_path:
+        raise HTTPException(404, f"job {job_id!r} has no output yet")
+    path = Path(j.output_path)
+    if not path.is_file():
+        raise HTTPException(
+            404,
+            f"output file {path.name!r} no longer exists on disk (it may "
+            "have been deleted by the user or by media server housekeeping)",
+        )
+    try:
+        body = path.read_bytes()
+    except OSError as e:
+        raise HTTPException(500, f"could not read output file: {e}")
+    return Response(
+        content=body,
+        media_type="text/vtt; charset=utf-8",
+        headers={
+            # inline = open in-browser, NOT a forced download. The user
+            # can still right-click → save-as if they want the file.
+            "Content-Disposition": f'inline; filename="{path.name}"',
+        },
+    )
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=JobView)

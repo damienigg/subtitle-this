@@ -30,7 +30,8 @@
           <th>Progress</th>
           <th>Lang</th>
           <th>Mode</th>
-          <th>Provider</th>
+          <th>STT</th>
+          <th>Translation</th>
           <th>Output</th>
           <th>Error</th>
           <th></th>
@@ -80,8 +81,32 @@
           </td>
           <td>{{ j.target_lang }}</td>
           <td>{{ j.mode }}</td>
-          <td>{{ j.provider }}</td>
-          <td><code class="path">{{ j.output_path or '-' }}</code></td>
+          <td>
+            {% if j.whisper_model %}
+              <span class="status-pill muted">{{ j.whisper_model }}</span>
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td><span class="status-pill muted">{{ j.provider }}</span></td>
+          <td>
+            {# Output cell: when the job has produced a .vtt, render it as
+               a clickable pill that opens the file in a new tab via
+               /api/jobs/{id}/output.vtt. While the job is still running
+               there's no .vtt yet, so show a muted "—" placeholder. #}
+            {% if j.output_path and j.status == 'succeeded' %}
+              <a href="/api/jobs/{{ j.id }}/output.vtt"
+                 target="_blank" rel="noopener"
+                 class="status-pill output-pill"
+                 title="Open {{ j.output_path }}">
+                 ▸ vtt
+              </a>
+            {% elif j.output_path %}
+              <span class="muted small" title="{{ j.output_path }}">written</span>
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
           <td>{{ j.error or '' }}</td>
           <td>
             {% if j.status in ('queued', 'running') %}

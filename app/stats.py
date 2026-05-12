@@ -127,6 +127,12 @@ class VttStats:
     # run didn't instrument it (CPU backend, or a pre-0.7.6 cache).
     pipeline_metrics: dict[str, Any] | None = None
 
+    # Heuristic quality score (0-100) + breakdown. Computed at
+    # compute_from_vtt time from the same data — kept in the record
+    # so the sidecar JSON carries it for downstream consumers without
+    # them having to re-evaluate the rules.
+    quality: dict[str, Any] | None = None
+
     # Cue stats
     cue_count: int = 0
     total_display_seconds: float = 0.0
@@ -253,6 +259,17 @@ def compute_from_vtt(
         CoverageBucket(start_min=i * 10, end_min=(i + 1) * 10, cue_count=c)
         for i, c in enumerate(bucket_counts)
     ]
+
+    # ── Quality score ──────────────────────────────────────────────────
+    # Computed last so it can see every other field populated. Kept on
+    # the record (rather than recomputed by consumers) so the score is
+    # stable across re-renders — what was written to the sidecar at
+    # job completion stays the same string forever, even if the
+    # scoring rules change in a future release.
+    from app import quality as quality_mod
+    stats.quality = quality_mod.to_jsonable(
+        quality_mod.compute_quality_score(stats),
+    )
 
     return stats
 

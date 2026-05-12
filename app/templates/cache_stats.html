@@ -12,10 +12,48 @@
     speech-display ratio in the 20-40 % range for talky films.
     Stats source: parsed live from the cached .vtt
     (key <code>{{ cache_key[:16] }}…</code>).
-    A copy of this record is also written next to the .vtt as
-    <code>&lt;file&gt;.stats.json</code> at job completion.
+    A copy is also written to
+    <code>cache_dir/stats/{{ cache_key[:8] }}…json</code> at job completion.
   </p>
 </section>
+
+{# ── Quality Score (heuristic) ───────────────────────────────── #}
+{% if stats.quality %}
+  {% set q = stats.quality %}
+  <section class="quality-card quality-grade-{{ q.grade }}">
+    <div class="quality-header">
+      <div class="quality-score-block">
+        <div class="quality-score-big">{{ q.score }}<span class="quality-score-suffix">/100</span></div>
+        <div class="quality-stars">
+          {% for _ in range(q.stars) %}★{% endfor %}{% for _ in range(5 - q.stars) %}☆{% endfor %}
+          <span class="quality-grade-letter">{{ q.grade }}</span>
+        </div>
+      </div>
+      <div class="quality-summary-block">
+        <h2>Quality score <span class="muted small">(heuristic — pipeline pathology detector, not a measure of translation correctness)</span></h2>
+        <p>{{ q.summary }}</p>
+      </div>
+    </div>
+    {% if q.factors %}
+      <table class="kv quality-factors">
+        <thead>
+          <tr><th>Factor</th><th>Penalty</th><th>Detail</th></tr>
+        </thead>
+        <tbody>
+          {% for f in q.factors %}
+          <tr class="severity-{{ f.severity }}">
+            <td><span class="severity-pill severity-{{ f.severity }}">{{ f.severity }}</span> {{ f.name }}</td>
+            <td>−{{ f.penalty }}</td>
+            <td class="muted small">{{ f.detail }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted small">No factors penalized — this is the clean baseline.</p>
+    {% endif %}
+  </section>
+{% endif %}
 
 {# ── Pipeline metadata card ──────────────────────────────────── #}
 <section>
