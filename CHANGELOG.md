@@ -7,6 +7,37 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.24] — 2026-05-12
+
+### Fixed
+
+- **Toggling vocal_isolation_enabled in an image without demucs
+  no longer silently fails the next job.** 0.7.23 shipped the
+  Demucs phase but the import-error path only surfaced when the
+  job was already running — the operator saw a job marked
+  "Failed: demucs is not installed" instead of being told at
+  toggle time. Two-pronged fix:
+
+  - **Submit-time fail-fast**: ``submit_item_job`` now probes
+    ``vocal_isolation.is_available()`` when the flag is on and
+    raises ``ValueError`` BEFORE queueing the job. The UI surfaces
+    the message inline ("rebuild image with demucs, or turn this
+    off in Settings") so the operator never queues a doomed run.
+  - **Settings page inline warning**: the
+    ``vocal_isolation_enabled`` checkbox now shows an amber
+    warning banner directly below it when the package isn't
+    importable in the running image. The user sees the problem
+    at the moment they save the setting, not after submitting
+    a job.
+
+  No behavior change when demucs IS available — the warning and
+  the fail-fast only fire on the missing-package path.
+
+### Tests
+
+- New ``test_submit_fail_fast_when_isolation_on_but_demucs_missing``
+  pins the submit-time bounce.
+
 ## [0.7.23] — 2026-05-12
 
 ### Added

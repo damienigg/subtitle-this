@@ -49,6 +49,11 @@
                 <input type="checkbox" id="{{ k }}" name="{{ k }}" {% if v %}checked{% endif %} {% if is_readonly %}disabled{% endif %}>
                 <span class="checkbox-state">currently <strong>{{ 'on' if v else 'off' }}</strong></span>
               </label>
+              {% if field_warnings and field_warnings.get(k) %}
+                <p class="field-warning" style="background: var(--bt-warn-bg); color: var(--bt-warn-fg); padding: 0.5rem 0.75rem; border-radius: 0.3rem; margin: 0.4rem 0;">
+                  ⚠️ {{ field_warnings.get(k) }}
+                </p>
+              {% endif %}
               {% if f.help %}<p class="field-help">{{ f.help }}</p>{% endif %}
             </div>
           {% else %}

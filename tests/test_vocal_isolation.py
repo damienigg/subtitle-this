@@ -317,3 +317,34 @@ def test_release_model_is_idempotent(fake_demucs):
     vi.release_model()
     vi.release_model()
     assert vi._separator is None
+
+
+# ── Submit-time fail-fast ──────────────────────────────────────────────────
+
+
+def test_submit_fail_fast_when_isolation_on_but_demucs_missing(monkeypatch):
+    """The job-submit helper refuses upfront when vocal_isolation_enabled
+    is True but demucs isn't installed — so the operator sees the fix
+    in the UI submit response instead of after the job briefly queues
+    and then fails with the same import error deep in the pipeline."""
+    from app import config as config_mod
+    from app.api.manage import submit_item_job
+    from app.server import MediaItem
+
+    # Force the demucs probe to report missing.
+    monkeypatch.setitem(sys.modules, "demucs.api", None)
+    # Strip any prior cached separator so is_available re-probes.
+    vi._separator = None
+    vi._model_name_cached = None
+    monkeypatch.setattr(
+        config_mod.settings, "_overrides",
+        {**config_mod.settings._overrides, "vocal_isolation_enabled": True},
+    )
+
+    item = MediaItem(id="item1", name="Film", path="/m/film.mkv", type="Movie")
+
+    class _FakeServer:
+        def refresh_item(self, *a, **kw): pass
+
+    with pytest.raises(ValueError, match="demucs"):
+        submit_item_job(server=_FakeServer(), item=item)

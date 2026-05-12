@@ -1195,6 +1195,31 @@ def cache_explorer_page(request: Request) -> HTMLResponse:
     )
 
 
+def _field_warnings() -> dict[str, str]:
+    """Per-field runtime warnings rendered inline on the Settings page.
+    Currently only one entry — vocal_isolation_enabled flags "demucs
+    is on but not installed in this image" so the user fixes it from
+    the form instead of by submitting a doomed job.
+
+    Each entry is keyed by field name; absence means no warning.
+    Cheap probe — just a try-import — so re-evaluating per page render
+    is fine."""
+    warnings: dict[str, str] = {}
+    if settings.vocal_isolation_enabled:
+        from app.pipeline import vocal_isolation as vi
+        ok, err = vi.is_available()
+        if not ok:
+            warnings["vocal_isolation_enabled"] = (
+                "demucs is NOT installed in this image. Any job "
+                "submitted while this is ON will fail fast at "
+                "queue time. Fix: rebuild the image with "
+                "`git pull && docker compose build && "
+                "docker compose up -d` (the shipped Dockerfiles "
+                "include demucs as of 0.7.23), or turn this OFF."
+            )
+    return warnings
+
+
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
@@ -1205,6 +1230,7 @@ def settings_page(request: Request) -> HTMLResponse:
             "values": settings.all_values(mask_sensitive=True),
             "sensitive": SENSITIVE_FIELDS,
             "read_only": READ_ONLY_FIELDS,
+            "field_warnings": _field_warnings(),
             "active": "settings",
             "saved": False,
         },
@@ -1243,6 +1269,7 @@ async def settings_save(request: Request) -> HTMLResponse:
             "values": settings.all_values(mask_sensitive=True),
             "sensitive": SENSITIVE_FIELDS,
             "read_only": READ_ONLY_FIELDS,
+            "field_warnings": _field_warnings(),
             "active": "settings",
             "saved": error is None,
             "error": error,

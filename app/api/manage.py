@@ -142,6 +142,27 @@ def submit_item_job(
     except BadRequest as e:
         raise ValueError(str(e)) from e
 
+    # Fail fast when vocal_isolation_enabled is set but the demucs
+    # package isn't actually importable in this image. Without this
+    # check the job would queue, run for a few seconds, then fail with
+    # "demucs is not installed" deep in the pipeline. Bouncing the
+    # submit returns the error to the UI immediately and tells the
+    # operator the actual fix (rebuild image with the vocal-isolation
+    # extra, or toggle the setting off).
+    if settings.vocal_isolation_enabled:
+        from app.pipeline import vocal_isolation as vi
+        ok, err = vi.is_available()
+        if not ok:
+            raise ValueError(
+                "Vocal isolation is ON in Settings but the `demucs` "
+                "package isn't installed in this container. Either "
+                "rebuild the image with `demucs>=4.0` (the shipped "
+                "Dockerfiles include it as of 0.7.23 — `git pull && "
+                "docker compose build && docker compose up -d`), or "
+                "turn off `vocal_isolation_enabled` in Settings. "
+                f"Import error: {err}"
+            )
+
     media = Path(item.path)
     item_id = item.id
 
