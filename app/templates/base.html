@@ -177,29 +177,46 @@
     }
     table.kv td { padding: 0.2rem 0; vertical-align: top; }
 
-    /* Horizontal bar charts on the Cache Stats page — duration histogram
-       and per-10-min coverage. The bar fills bar-cell proportional to the
-       max count, label/count flank it. Single-shade so it stays calm. */
+    /* Horizontal bar charts on the Cache Stats page — duration histogram,
+       per-10-min coverage, and VAD region distribution. All three share the
+       same 4-column shape: bucket label | proportional bar | count | %.
+       Count column is wide enough for 4-digit values (Inception ≈ 1746 cues);
+       % column is fixed-width so the right edges line up across tables. */
     table.bar-table {
-      border-collapse: collapse; width: 100%; max-width: 36rem;
+      border-collapse: collapse; width: 100%; max-width: 40rem;
       margin: 0.4rem 0 1rem;
+    }
+    table.bar-table thead th {
+      font-size: 0.78rem; font-weight: 500; text-transform: uppercase;
+      letter-spacing: 0.04em; color: var(--pico-muted-color);
+      border-bottom: 1px solid var(--pico-muted-border-color);
+      padding-bottom: 0.25rem;
     }
     table.bar-table th {
       text-align: left; font-weight: 500; padding: 0.18rem 0.6rem 0.18rem 0;
       min-width: 6rem; white-space: nowrap;
       font-variant-numeric: tabular-nums;
     }
-    table.bar-table td { padding: 0.18rem 0; }
+    table.bar-table td { padding: 0.22rem 0; }
+    table.bar-table tbody tr:hover { background: var(--pico-card-background-color); }
     table.bar-table .bar-cell {
-      width: 70%; padding-right: 0.5rem;
+      width: auto; padding-right: 0.6rem;
     }
     table.bar-table .bar {
       height: 0.85rem; background: var(--bt-active-bg); border-radius: 0.2rem;
       min-width: 1px;
     }
+    table.bar-table tbody tr:hover .bar {
+      background: var(--bt-active-fg);
+    }
     table.bar-table .bar-count {
-      width: 3rem; text-align: right;
+      width: 4.5rem; text-align: right; padding-right: 0.8rem;
       font-variant-numeric: tabular-nums;
+    }
+    table.bar-table .bar-pct {
+      width: 4rem; text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: var(--pico-muted-color);
     }
 
     /* Jobs section header — keeps the h2 and the "Clear finished" button on

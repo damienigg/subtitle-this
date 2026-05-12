@@ -7,7 +7,33 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
-## [0.7.20] — 2026-05-12
+## [0.7.21] — 2026-05-12
+
+### Changed
+
+- **Cache Stats histogram tables — readable column widths and
+  consistent layout.** The three histograms (cue duration
+  distribution, cues per 10-min coverage bucket, VAD region
+  duration) now share the same 4-column shape:
+  ``Bucket | bar | Count | Share %``.
+  - Count column widened from 3rem to 4.5rem so 4-digit values
+    (e.g. Inception's 1746 cues per bucket) no longer wrap or
+    truncate.
+  - New ``.bar-pct`` class — fixed 4rem, right-aligned,
+    tabular-nums — so percent columns line up across the three
+    tables instead of floating ad-hoc.
+  - **Coverage** and **VAD region** histograms now show a
+    ``Share %`` column too. Previously only the duration
+    histogram did, which made the other two harder to read
+    ("100 cues" means nothing without "out of how many").
+  - Each table now has a small uppercase column header
+    (``Duration / Cues / Share``) so the meaning of each
+    number is explicit, not inferred from position.
+  - Row hover lights up the bar so you can scan a long
+    histogram without losing your eye on the row.
+
+  Pure presentation change — no metric values were added or
+  removed, only how they're laid out.
 
 ### Added
 

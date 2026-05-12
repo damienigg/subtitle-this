@@ -117,6 +117,15 @@
     ] %}
     {% set max_b = buckets | map(attribute=1) | max %}
     <table class="bar-table">
+      <thead>
+        <tr>
+          <th>Duration</th>
+          <th></th>
+          <th class="bar-count">Cues</th>
+          <th class="bar-pct">Share</th>
+        </tr>
+      </thead>
+      <tbody>
       {% for label, n in buckets %}
         {% set pct = (n / stats.cue_count * 100) | round(1) %}
         {% set bar_pct = (n / max_b * 100) if max_b > 0 else 0 %}
@@ -124,9 +133,10 @@
           <th>{{ label }}</th>
           <td class="bar-cell"><div class="bar" style="width: {{ bar_pct }}%"></div></td>
           <td class="bar-count">{{ n }}</td>
-          <td class="muted small">{{ pct }} %</td>
+          <td class="bar-pct">{{ pct }} %</td>
         </tr>
       {% endfor %}
+      </tbody>
     </table>
   {% else %}
     <p class="muted"><em>No cues to display.</em></p>
@@ -166,15 +176,28 @@
   <h3>Cues per 10-min bucket</h3>
   {% if stats.coverage_buckets %}
     {% set max_cb = stats.coverage_buckets | map(attribute='cue_count') | max %}
+    {% set total_cb = stats.coverage_buckets | map(attribute='cue_count') | sum %}
     <table class="bar-table">
+      <thead>
+        <tr>
+          <th>Runtime window</th>
+          <th></th>
+          <th class="bar-count">Cues</th>
+          <th class="bar-pct">Share</th>
+        </tr>
+      </thead>
+      <tbody>
       {% for b in stats.coverage_buckets %}
         {% set bar_pct = (b.cue_count / max_cb * 100) if max_cb > 0 else 0 %}
+        {% set pct = (b.cue_count / total_cb * 100) | round(1) if total_cb > 0 else 0 %}
         <tr>
           <th>{{ '%3d-%3d min' | format(b.start_min, b.end_min) }}</th>
           <td class="bar-cell"><div class="bar" style="width: {{ bar_pct }}%"></div></td>
           <td class="bar-count">{{ b.cue_count }}</td>
+          <td class="bar-pct">{{ pct }} %</td>
         </tr>
       {% endfor %}
+      </tbody>
     </table>
     <p class="muted small">
       Look for buckets near zero in the middle of the film — those flag a
@@ -230,15 +253,28 @@
         ('> 10 s',    vad.region_duration_histogram.get('gte_10s', 0)),
       ] %}
       {% set max_vb = vad_buckets | map(attribute=1) | max %}
+      {% set total_vb = vad_buckets | map(attribute=1) | sum %}
       <table class="bar-table">
+        <thead>
+          <tr>
+            <th>Region duration</th>
+            <th></th>
+            <th class="bar-count">Regions</th>
+            <th class="bar-pct">Share</th>
+          </tr>
+        </thead>
+        <tbody>
         {% for label, n in vad_buckets %}
           {% set bar_pct = (n / max_vb * 100) if max_vb > 0 else 0 %}
+          {% set pct = (n / total_vb * 100) | round(1) if total_vb > 0 else 0 %}
           <tr>
             <th>{{ label }}</th>
             <td class="bar-cell"><div class="bar" style="width: {{ bar_pct }}%"></div></td>
             <td class="bar-count">{{ n }}</td>
+            <td class="bar-pct">{{ pct }} %</td>
           </tr>
         {% endfor %}
+        </tbody>
       </table>
       <p class="muted small">
         A heavy <strong>0.25-0.5 s</strong> bucket combined with a low speech ratio
