@@ -400,6 +400,81 @@ def test_cache_explorer_api_endpoints_return_lists(client):
     assert isinstance(r.json(), list)
 
 
+def _redirect_cache_dir(tmp_path, monkeypatch):
+    """Point settings.cache_dir at a fresh tmp_path. Belt-and-suspenders:
+    we also strip any pre-existing instance attribute that a prior test
+    may have left behind via ``settings.cache_dir = X`` (some legacy
+    tests do that — monkeypatch's restore-on-teardown puts the value
+    BACK as an instance attribute, shadowing _overrides permanently).
+    Returns the chosen cache_dir."""
+    from app.config import settings as runtime_settings
+    if "cache_dir" in runtime_settings.__dict__:
+        monkeypatch.delattr(runtime_settings, "cache_dir", raising=False)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    monkeypatch.setattr(
+        runtime_settings, "_overrides",
+        {**runtime_settings._overrides, "cache_dir": str(cache_dir)},
+    )
+    return cache_dir
+
+
+def test_cache_stats_api_returns_stats_for_existing_entry(client, tmp_path, monkeypatch):
+    """End-to-end: write a cached payload, hit the stats API, get a
+    JSON record with the cue count and duration buckets populated."""
+    import json
+    cache_dir = _redirect_cache_dir(tmp_path, monkeypatch)
+    payload = {
+        "vtt": (
+            "WEBVTT\n\n"
+            "NOTE Subtitle This auto-subs (en -> fr, mode=audio, "
+            "whisper=small, provider=nllb)\n\n"
+            "00:00:00.000 --> 00:00:02.000\nFirst cue\n\n"
+            "00:00:10.000 --> 00:00:12.000\nSecond cue\n"
+        ),
+        "media_path": "/m/test.mkv",
+        "mode": "audio",
+        "detected_source_language": "en",
+        "cue_count": 2,
+    }
+    (cache_dir / "abc12345.json").write_text(json.dumps(payload))
+
+    r = client.get("/api/cache/vtt/abc12345/stats")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["cue_count"] == 2
+    assert body["media_name"] == "test.mkv"
+    assert body["source_lang"] == "en"
+    assert body["target_lang"] == "fr"
+
+
+def test_cache_stats_page_renders(client, tmp_path, monkeypatch):
+    import json
+    cache_dir = _redirect_cache_dir(tmp_path, monkeypatch)
+    payload = {
+        "vtt": (
+            "WEBVTT\n\n"
+            "00:00:00.000 --> 00:00:02.000\nHi\n"
+        ),
+        "media_path": "/m/film.mkv",
+        "mode": "audio",
+        "detected_source_language": "en",
+        "cue_count": 1,
+    }
+    (cache_dir / "abc12345.json").write_text(json.dumps(payload))
+
+    r = client.get("/cache/vtt/abc12345/stats")
+    assert r.status_code == 200
+    assert "Cues" in r.text
+    assert "Coverage" in r.text
+    assert "film.mkv" in r.text
+
+
+def test_cache_stats_api_404_when_missing(client):
+    r = client.get("/api/cache/vtt/doesnotexist/stats")
+    assert r.status_code == 404
+
+
 def test_cache_explorer_delete_rejects_path_traversal(client):
     """The HTTP layer must surface ValueError as 400, not let a malformed
     key resolve to an arbitrary file. Most `..` shapes get caught earlier

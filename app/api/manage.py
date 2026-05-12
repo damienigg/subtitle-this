@@ -168,6 +168,21 @@ def submit_item_job(
         job.output_path = str(out)
         job.cue_count = result.cue_count
 
+        # Write the {vtt_path}.stats.json sidecar so the run's quality /
+        # coverage numbers travel with the .vtt itself — copy the .vtt
+        # off the NAS and the metrics come along. Best-effort: any IO
+        # failure is logged and swallowed inside write_sidecar so a
+        # broken metrics write can't hold the job hostage.
+        from app import stats as stats_mod
+        stats_record = stats_mod.compute_from_vtt(
+            result.vtt,
+            media_path=str(media),
+            mode=result.mode,
+            detected_source_language=result.detected_source_language,
+            took_seconds=result.took_seconds,
+        )
+        stats_mod.write_sidecar(out, stats_record)
+
         # Language tag write-back: if the source track had no language tag and
         # Whisper detected one, persist that detection to the file's audio
         # stream metadata so the media server (and any other tool) sees the
@@ -397,6 +412,45 @@ def cache_delete_transcript(cache_key: str) -> dict:
     if not removed:
         raise HTTPException(404, f"transcript cache entry {cache_key!r} not found")
     return {"deleted": cache_key}
+
+
+@router.get("/cache/vtt/{cache_key}/stats")
+def cache_vtt_stats(cache_key: str) -> dict:
+    """Compute the quality / coverage stats for one cached entry.
+
+    The stats are derived from the cached .vtt content on every call —
+    cheap enough (few ms even on a 2 h film) and means we don't have to
+    migrate old payloads. The same record is also written as a sidecar
+    next to the .vtt at job-completion time; this endpoint is the source
+    of truth for the Cache Explorer's stats page."""
+    import json
+    from pathlib import Path
+    from app import stats as stats_mod
+
+    try:
+        cache_explorer._validate_cache_key(cache_key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    path = Path(settings.cache_dir) / f"{cache_key}.json"
+    if not path.is_file():
+        raise HTTPException(404, f"VTT cache entry {cache_key!r} not found")
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        raise HTTPException(500, f"unreadable cache entry: {e}")
+    vtt_text = payload.get("vtt") if isinstance(payload, dict) else None
+    if not isinstance(vtt_text, str) or not vtt_text:
+        raise HTTPException(404, f"entry {cache_key!r} has no .vtt content")
+    record = stats_mod.compute_from_vtt(
+        vtt_text,
+        media_path=payload.get("media_path") if isinstance(payload, dict) else None,
+        cache_key=cache_key,
+        mode=payload.get("mode") if isinstance(payload, dict) else None,
+        detected_source_language=(
+            payload.get("detected_source_language") if isinstance(payload, dict) else None
+        ),
+    )
+    return stats_mod.to_jsonable(record)
 
 
 @router.post("/cache/vtt/clear-all")

@@ -76,7 +76,10 @@
           <td>{{ e.size_bytes | filesizeformat }}</td>
           <td><span class="muted small">{{ e.modified_at | ts_relative }}</span></td>
           <td><code class="path small">{{ e.cache_key[:12] }}…</code></td>
-          <td>
+          <td class="row-actions">
+            <a href="/cache/vtt/{{ e.cache_key }}/stats"
+               class="secondary outline action-btn"
+               title="Quality / coverage stats for this entry">📊</a>
             <button type="button" class="secondary outline delete-vtt-btn"
                     data-key="{{ e.cache_key }}"
                     data-label="{{ e.media_name or e.cache_key }}"

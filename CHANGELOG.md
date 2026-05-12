@@ -7,6 +7,50 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.5] — 2026-05-12
+
+Objective quality / coverage metrics per completed conversion —
+the same dimensions surfaced in the Inception 0.7.1 post-mortem
+(cue count, duration histogram, per-10-min coverage buckets,
+character density, speech-display ratio), now produced
+automatically for every run.
+
+### Added
+
+- New module `app/stats.py` computing the full stats record
+  from a finished .vtt. All metrics derive from the .vtt content
+  alone — no media probe — so they're cheap to recompute on
+  demand for any cached entry.
+- Sidecar `<vtt_path>.stats.json` is written next to the .vtt at
+  job completion (atomic via tmp + os.replace, best-effort —
+  a metrics write failure cannot block a job's actual completion).
+  Means copying a .vtt off the NAS brings its quality numbers
+  with it.
+- New page `GET /cache/vtt/{cache_key}/stats` rendering the same
+  record with horizontal bar charts (duration distribution +
+  per-10-min coverage) and inline annotations explaining what
+  shapes flag pathologies (>15 % very-short cues = compressed-
+  timestamp regression; a single bucket at zero between populated
+  ones = VAD rejected a scene).
+- API endpoint `GET /api/cache/vtt/{cache_key}/stats` returning
+  the JSON record — same payload as the `.stats.json` sidecar.
+- "📊" button on every Cache Explorer row, linking to the stats
+  page for that entry.
+
+### Tests
+
+- 11 unit tests in `tests/test_stats.py` covering cue parsing
+  (timestamps + multi-line text + NOTE header handling), duration
+  bucket classification at band edges, the very_short_pct
+  pathology metric, coverage-bucket spanning, NOTE-header
+  metadata parsing + override precedence, atomic sidecar write,
+  and the no-raise-on-OSError contract.
+- 3 smoke tests in `tests/test_smoke_api.py` for the API and the
+  page render. Also added a `_redirect_cache_dir` helper that
+  strips any stale `cache_dir` instance attribute a prior test
+  may have left behind (legacy monkeypatch-via-setattr pattern
+  in `test_perf_hardening` was shadowing `_overrides`).
+
 ## [0.7.4] — 2026-05-12
 
 New **Cache Explorer** page so re-runs no longer require SSH-ing

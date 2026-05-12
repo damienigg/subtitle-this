@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section>
+  <p class="muted small"><a href="/cache">← Cache</a></p>
+  <h1>{{ stats.media_name or "Cached subtitle" }}</h1>
+  <p class="muted small">
+    Objective quality / coverage metrics. None of these are pass/fail by themselves —
+    a low cue count on a quiet film is fine; on a dialog-heavy film it's
+    a "Whisper missed dialog" red flag. The shapes you're looking for:
+    a flat coverage histogram, &lt;10 % of cues under 0.5 s, and a
+    speech-display ratio in the 20-40 % range for talky films.
+    Stats source: parsed live from the cached .vtt
+    (key <code>{{ cache_key[:16] }}…</code>).
+    A copy of this record is also written next to the .vtt as
+    <code>&lt;file&gt;.stats.json</code> at job completion.
+  </p>
+</section>
+
+{# ── Pipeline metadata card ──────────────────────────────────── #}
+<section>
+  <h2>Pipeline</h2>
+  <table class="kv">
+    <tr><th>Source path</th><td><code class="path small">{{ stats.media_path or '—' }}</code></td></tr>
+    <tr><th>Languages</th><td>
+      {% if stats.source_lang and stats.target_lang %}
+        {{ stats.source_lang }} → {{ stats.target_lang }}
+        {% if stats.detected_source_language and stats.detected_source_language != stats.source_lang %}
+          <span class="muted small">(Whisper detected: {{ stats.detected_source_language }})</span>
+        {% endif %}
+      {% else %}<span class="muted">—</span>{% endif %}
+    </td></tr>
+    <tr><th>Mode</th><td>{{ stats.mode or '—' }}</td></tr>
+    <tr><th>Provider</th><td>{{ stats.provider or '—' }}</td></tr>
+    <tr><th>Whisper</th><td>{{ stats.whisper_model or '—' }}</td></tr>
+    {% if stats.took_seconds %}
+    <tr><th>Wall clock</th><td>{{ stats.took_seconds|int|duration }}</td></tr>
+    {% endif %}
+  </table>
+</section>
+
+{# ── Cue stats ───────────────────────────────────────────────── #}
+<section>
+  <h2>Cues</h2>
+  <table class="kv">
+    <tr><th>Count</th><td>{{ stats.cue_count }}</td></tr>
+    <tr><th>Total display time</th><td>{{ stats.total_display_seconds|int|duration }}
+      <span class="muted small">({{ stats.total_display_seconds }} s)</span></td></tr>
+    <tr><th>Average duration</th><td>{{ stats.avg_duration_seconds }} s</td></tr>
+    <tr><th>Range</th><td>{{ stats.min_duration_seconds }} s — {{ stats.max_duration_seconds }} s</td></tr>
+    <tr><th>Very short (&lt; 0.5 s)</th><td>
+      {{ stats.duration_buckets.lt_0_5 }} cues
+      <span class="{% if stats.very_short_pct > 15 %}warn-text{% else %}muted{% endif %} small">
+        ({{ stats.very_short_pct }} % — &gt; 15 % suggests Whisper compressed timestamps)
+      </span>
+    </td></tr>
+  </table>
+
+  <h3>Duration distribution</h3>
+  {% if stats.cue_count > 0 %}
+    {% set buckets = [
+      ('< 0.5 s', stats.duration_buckets.lt_0_5),
+      ('0.5-1 s', stats.duration_buckets.lt_1_0),
+      ('1-2 s',   stats.duration_buckets.lt_2_0),
+      ('2-5 s',   stats.duration_buckets.lt_5_0),
+      ('> 5 s',   stats.duration_buckets.gte_5_0),
+    ] %}
+    {% set max_b = buckets | map(attribute=1) | max %}
+    <table class="bar-table">
+      {% for label, n in buckets %}
+        {% set pct = (n / stats.cue_count * 100) | round(1) %}
+        {% set bar_pct = (n / max_b * 100) if max_b > 0 else 0 %}
+        <tr>
+          <th>{{ label }}</th>
+          <td class="bar-cell"><div class="bar" style="width: {{ bar_pct }}%"></div></td>
+          <td class="bar-count">{{ n }}</td>
+          <td class="muted small">{{ pct }} %</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p class="muted"><em>No cues to display.</em></p>
+  {% endif %}
+</section>
+
+{# ── Content / readability ───────────────────────────────────── #}
+<section>
+  <h2>Content</h2>
+  <table class="kv">
+    <tr><th>Total characters</th><td>{{ stats.total_characters }}</td></tr>
+    <tr><th>Average per cue</th><td>{{ stats.avg_chars_per_cue }}</td></tr>
+    <tr><th>Estimated WPM</th><td>
+      {{ stats.estimated_wpm }}
+      <span class="muted small">
+        (over on-screen display time only; conversational French ≈ 150 WPM)
+      </span>
+    </td></tr>
+  </table>
+</section>
+
+{# ── Coverage ────────────────────────────────────────────────── #}
+<section>
+  <h2>Coverage</h2>
+  <table class="kv">
+    <tr><th>Latest cue end</th><td>{{ stats.last_cue_end_seconds|int|duration }}
+      <span class="muted small">(approximate runtime — no media probe)</span></td></tr>
+    <tr><th>Speech display ratio</th><td>
+      {{ stats.speech_display_ratio_pct }} %
+      <span class="muted small">
+        (share of runtime carrying on-screen subtitles; dialog-heavy films
+        ≈ 30-50 %, action films lower)
+      </span>
+    </td></tr>
+  </table>
+
+  <h3>Cues per 10-min bucket</h3>
+  {% if stats.coverage_buckets %}
+    {% set max_cb = stats.coverage_buckets | map(attribute='cue_count') | max %}
+    <table class="bar-table">
+      {% for b in stats.coverage_buckets %}
+        {% set bar_pct = (b.cue_count / max_cb * 100) if max_cb > 0 else 0 %}
+        <tr>
+          <th>{{ '%3d-%3d min' | format(b.start_min, b.end_min) }}</th>
+          <td class="bar-cell"><div class="bar" style="width: {{ bar_pct }}%"></div></td>
+          <td class="bar-count">{{ b.cue_count }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+    <p class="muted small">
+      Look for buckets near zero in the middle of the film — those flag a
+      scene where VAD rejected most of the dialog. Trailing zeros are
+      either the credits (expected) or, before 0.7.2, the timestamp-
+      collapse bug (every cue stamped 0-segment_seconds relative).
+    </p>
+  {% else %}
+    <p class="muted"><em>Not enough cues to compute coverage.</em></p>
+  {% endif %}
+</section>
+
+<section>
+  <p class="muted small">
+    <a href="/api/cache/vtt/{{ cache_key }}/stats">Raw JSON</a>
+    · same record as the <code>.stats.json</code> sidecar written at completion time.
+  </p>
+</section>
+{% endblock %}

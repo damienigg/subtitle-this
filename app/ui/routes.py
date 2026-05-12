@@ -808,6 +808,50 @@ def library(
     )
 
 
+@router.get("/cache/vtt/{cache_key}/stats", response_class=HTMLResponse)
+def cache_stats_page(request: Request, cache_key: str) -> HTMLResponse:
+    """Render the per-entry quality/coverage stats page. Same numbers
+    the API endpoint returns, formatted as a human-readable layout with
+    duration histogram + per-10-min coverage table. Linked from the
+    Cache Explorer's 📊 button on every row."""
+    from fastapi import HTTPException
+    import json
+    from pathlib import Path
+    from app import cache_explorer as ce
+    from app import stats as stats_mod
+
+    try:
+        ce._validate_cache_key(cache_key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    path = Path(settings.cache_dir) / f"{cache_key}.json"
+    if not path.is_file():
+        raise HTTPException(404, f"cache entry {cache_key!r} not found")
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        raise HTTPException(500, "unreadable cache entry")
+    vtt_text = payload.get("vtt", "") if isinstance(payload, dict) else ""
+    record = stats_mod.compute_from_vtt(
+        vtt_text,
+        media_path=payload.get("media_path") if isinstance(payload, dict) else None,
+        cache_key=cache_key,
+        mode=payload.get("mode") if isinstance(payload, dict) else None,
+        detected_source_language=(
+            payload.get("detected_source_language") if isinstance(payload, dict) else None
+        ),
+    )
+    return templates.TemplateResponse(
+        request,
+        "cache_stats.html",
+        {
+            "stats": record,
+            "cache_key": cache_key,
+            "active": "cache",
+        },
+    )
+
+
 @router.get("/cache", response_class=HTMLResponse)
 def cache_explorer_page(request: Request) -> HTMLResponse:
     """The Cache Explorer page. Lists every VTT (result) cache entry and

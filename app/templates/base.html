@@ -80,6 +80,43 @@
        the codebase has a single base.html with all the inline CSS. */
     .muted { color: var(--pico-muted-color); }
     .small { font-size: 0.85em; }
+    .warn-text { color: var(--bt-warn-fg); }
+
+    /* Key-value tables on the Cache Stats page. Left column is a fixed-
+       width label, right column is the value. No row separators because
+       there are only ~5 rows per section. */
+    table.kv { border-collapse: collapse; margin: 0.4rem 0 1rem; }
+    table.kv th {
+      text-align: left; font-weight: 500;
+      color: var(--pico-muted-color);
+      padding: 0.2rem 1rem 0.2rem 0; min-width: 12rem; vertical-align: top;
+    }
+    table.kv td { padding: 0.2rem 0; vertical-align: top; }
+
+    /* Horizontal bar charts on the Cache Stats page — duration histogram
+       and per-10-min coverage. The bar fills bar-cell proportional to the
+       max count, label/count flank it. Single-shade so it stays calm. */
+    table.bar-table {
+      border-collapse: collapse; width: 100%; max-width: 36rem;
+      margin: 0.4rem 0 1rem;
+    }
+    table.bar-table th {
+      text-align: left; font-weight: 500; padding: 0.18rem 0.6rem 0.18rem 0;
+      min-width: 6rem; white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    table.bar-table td { padding: 0.18rem 0; }
+    table.bar-table .bar-cell {
+      width: 70%; padding-right: 0.5rem;
+    }
+    table.bar-table .bar {
+      height: 0.85rem; background: var(--bt-active-bg); border-radius: 0.2rem;
+      min-width: 1px;
+    }
+    table.bar-table .bar-count {
+      width: 3rem; text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
 
     /* Jobs section header — keeps the h2 and the "Clear finished" button on
        the same baseline. The button right-aligns and stays optically smaller
@@ -91,6 +128,15 @@
     .jobs-header > h2 { margin-bottom: 0; }
     .clear-finished-btn {
       font-size: 0.85em; padding: 0.3rem 0.7rem;
+    }
+    /* Per-row action cell on the Cache Explorer: keeps the 📊 link and
+       the ✕ delete button on one line at the right edge of the row. */
+    td.row-actions { white-space: nowrap; }
+    td.row-actions .action-btn,
+    td.row-actions .delete-vtt-btn,
+    td.row-actions .delete-transcript-btn {
+      padding: 0.2rem 0.55rem; font-size: 0.85em;
+      display: inline-block; text-decoration: none;
     }
 
     /* Progress bar — used in the jobs table and the batch panel summary. The
