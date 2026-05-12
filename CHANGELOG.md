@@ -7,6 +7,33 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.13] — 2026-05-12
+
+### Fixed
+
+- **Job stats page score mismatch.** The Quality pill in the Jobs
+  table showed e.g. 82/B (computed in the runner from the full
+  pipeline_metrics) but clicking it took the user to a page
+  rendering 92/A — `/jobs/{id}/stats` was recomputing the score
+  from the .vtt alone, with no knowledge of the VAD / packing /
+  translation telemetry the runner had seen. Both surfaces now
+  use the same `pipeline_metrics` input (stored on the Job in
+  the runner, threaded through to `compute_from_vtt` in the
+  per-job stats route).
+
+### Added
+
+- New `Job.pipeline_metrics` field, snapshotted at the same time
+  as `quality_score` / `quality_grade`. Tolerantly deserialized
+  by `jobs_store` so pre-0.7.13 on-disk job records stay
+  loadable.
+- Regression test in `tests/test_smoke_api.py`:
+  `test_job_stats_page_uses_stored_pipeline_metrics` constructs
+  a Job with a heavy pad-drop signal in pipeline_metrics and
+  asserts the resulting stats page surfaces the
+  "Region-packing unrecoverable drops" factor. Verified to fail
+  on the pre-fix code with the exact "factor list missing" message.
+
 ## [0.7.12] — 2026-05-12
 
 Distribution-readiness pass: onboarding wizard, settings migration

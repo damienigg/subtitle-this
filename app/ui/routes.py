@@ -933,11 +933,17 @@ def job_stats_page(request: Request, job_id: str) -> HTMLResponse:
         vtt_text = path.read_text(encoding="utf-8")
     except OSError as e:
         raise HTTPException(500, f"could not read output: {e}")
+    # Pass through the job's stored pipeline_metrics so the score the
+    # page renders is byte-identical to the score in the Jobs table's
+    # Quality pill. Without this the page recomputes from the .vtt
+    # alone, misses every VAD / packing / translation penalty, and
+    # silently reports a higher score than the pill claimed.
     record = stats_mod.compute_from_vtt(
         vtt_text,
         media_path=str(path),
         cache_key=f"job:{job_id}",
         mode=j.mode,
+        pipeline_metrics=getattr(j, "pipeline_metrics", None),
     )
     return templates.TemplateResponse(
         request,

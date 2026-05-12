@@ -69,6 +69,13 @@ class Job:
     # didn't reach the writer (failed / canceled / still running).
     quality_score: int | None = None
     quality_grade: str | None = None     # A/B/C/D/F — same source
+    # Per-run pipeline telemetry (VAD / packing / whisper / translation).
+    # Stored on the Job so /jobs/{id}/stats can compute the SAME score
+    # the runner did — without this field the page would recompute from
+    # the .vtt alone and silently inflate the score by ignoring the
+    # packing pad-drop / translation duplicate / VAD-coverage penalties
+    # that live in this dict.
+    pipeline_metrics: dict | None = None
     queued_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None

@@ -187,6 +187,12 @@ def submit_item_job(
             q = quality_mod.compute_quality_score(stats_record)
             job.quality_score = q.score
             job.quality_grade = q.grade
+            # Persist the pipeline metrics on the Job too — the per-job
+            # stats page (/jobs/{id}/stats) recomputes the full record
+            # from these on demand and would compute a different score
+            # if they were missing (it'd see only the .vtt-derived
+            # signals and miss the VAD / packing / translation penalties).
+            job.pipeline_metrics = result.pipeline_metrics
         except Exception:
             _log.warning("quality score computation failed", exc_info=True)
 

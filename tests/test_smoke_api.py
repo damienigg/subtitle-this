@@ -476,6 +476,70 @@ def test_cache_stats_api_404_when_missing(client):
     assert r.status_code == 404
 
 
+def test_job_stats_page_uses_stored_pipeline_metrics(client, tmp_path, monkeypatch):
+    """Regression for 0.7.13: /jobs/{id}/stats was recomputing the score
+    from the .vtt alone, ignoring pipeline_metrics. That produced a
+    higher score (no VAD/packing/translation penalties) than what the
+    Jobs table's pill displayed — the table used the score from the
+    runner which DID see pipeline_metrics. This locks in the fix:
+    both surfaces must use the same pipeline_metrics input."""
+    from app import jobs as jobs_mod
+    from app.jobs import Job
+
+    vtt_path = tmp_path / "test.vtt"
+    # Minimal .vtt with one short cue. very_short_pct alone would
+    # produce a near-perfect score; the pipeline_metrics below carry
+    # the penalty signal that should drag the score down.
+    vtt_path.write_text(
+        "WEBVTT\n\n"
+        "NOTE Subtitle This auto-subs (en -> fr, mode=audio, "
+        "whisper=small, provider=nllb)\n\n"
+        "00:00:00.000 --> 00:00:02.000\nHi\n",
+        encoding="utf-8",
+    )
+
+    job = Job(
+        id="testjob123",
+        item_id="i1",
+        item_name="test.mkv",
+        target_lang="fr",
+        provider="nllb",
+        mode="audio",
+        status="succeeded",
+        output_path=str(vtt_path),
+        # Pipeline metrics with a heavy pad-drop signal that the
+        # quality scorer must penalize.
+        pipeline_metrics={
+            "vad": None,
+            "whisper": None,
+            "translation": None,
+            "packing": {
+                "enabled": True,
+                "windows_total": 10,
+                "windows_packed": 10,
+                "windows_single_region": 0,
+                "avg_regions_per_window": 12.0,
+                "cue_drop_pad_zone_count": 700,   # → "unrecoverable drops" critical penalty
+                "cue_snap_pad_zone_count": 0,
+                "cue_keep_count": 900,
+            },
+        },
+    )
+    monkeypatch.setattr(jobs_mod, "_jobs", {job.id: job})
+    try:
+        r = client.get(f"/jobs/{job.id}/stats")
+        assert r.status_code == 200
+        body = r.text
+        # The pad-drop penalty MUST appear on the page — that's the
+        # signal proving pipeline_metrics was consumed.
+        assert "Region-packing unrecoverable drops" in body, (
+            "Quality factor list is missing the pad-drops penalty — "
+            "pipeline_metrics was not passed to compute_from_vtt"
+        )
+    finally:
+        jobs_mod._jobs.pop(job.id, None)
+
+
 def test_dashboard_redirects_to_wizard_when_server_not_configured(client, monkeypatch):
     """First-run: fresh install with no media_server_url or api_key
     set should redirect the user from the dashboard to /onboarding
