@@ -7,7 +7,40 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
-## [0.7.21] — 2026-05-12
+## [0.7.22] — 2026-05-12
+
+### Fixed
+
+- **Jobs table Quality pill went stale after Cache Explorer
+  re-polish.** Re-polishing an entry rewrote the cache payload
+  and the on-disk ``.vtt`` next to the media, but did not touch
+  the ``Job.quality_score`` field that was snapshotted at
+  job-completion time. As a result, the Jobs table kept showing
+  the pre-polish score (e.g. 82) while clicking the pill opened
+  ``/jobs/<id>/stats`` — which recomputed from the freshly
+  polished .vtt and showed a different score (e.g. 90). The
+  ``/api/cache/vtt/{key}/repolish`` endpoint now:
+  - recomputes the heuristic quality score from the post-polish
+    VTT, using the same ``pipeline_metrics`` the original run
+    persisted (so it stays comparable to the original run's
+    score — VAD / packing / translation penalties still count);
+  - updates ``quality_score`` + ``quality_grade`` on every Job
+    whose ``output_path`` matches the .vtt the polish endpoint
+    just rewrote, and persists the jobs file so the change
+    survives a restart;
+  - rewrites the ``cache_dir/stats/<key>.json`` sidecar so the
+    on-disk record matches the new VTT (was previously left
+    pointing at the pre-polish numbers).
+  - The endpoint response now also carries
+    ``jobs_refreshed`` + ``new_quality_score`` + ``new_quality_grade``
+    so the UI can show a confirmation that the pill has
+    actually moved.
+
+### Tests
+
+- New ``test_cache_repolish_refreshes_job_quality_score`` covers
+  the full flow end-to-end: stale Job → POST repolish → assert
+  Job.quality_score changed AND the sidecar matches.
 
 ### Changed
 

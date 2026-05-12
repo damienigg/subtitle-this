@@ -746,6 +746,77 @@ def test_cache_repolish_endpoint_rewrites_vtt_in_place(client, tmp_path, monkeyp
     assert "00:00:11.20" in persisted["vtt"] or "00:00:11.200" in persisted["vtt"]
 
 
+def test_cache_repolish_refreshes_job_quality_score(client, tmp_path, monkeypatch):
+    """Regression for the "Jobs table pill stays stale after re-polish"
+    bug: when /api/cache/vtt/{key}/repolish overwrites the .vtt next to
+    the media, any Job whose output_path points at the same .vtt must
+    have its quality_score recomputed from the new file — otherwise the
+    dashboard pill keeps showing the pre-polish score while the stats
+    page recomputes and shows a different one."""
+    import json
+    from app import jobs as jobs_mod
+    cache_dir = _redirect_cache_dir(tmp_path, monkeypatch)
+
+    # Fake media path that DOES resolve so disk_vtt_updated turns True.
+    media = tmp_path / "movie.mkv"
+    media.write_bytes(b"")  # path just needs to exist
+    disk_vtt = media.with_name("movie.fr.audio.ai.vtt")
+
+    # Cache payload — one very-short cue so polish will extend it
+    # AND the resulting quality_score is well-defined.
+    src_vtt = (
+        "WEBVTT\n\n"
+        "NOTE Subtitle This auto-subs (en -> fr, mode=audio, "
+        "whisper=small, provider=nllb)\n\n"
+        "00:00:10.000 --> 00:00:10.300\nYes.\n\n"
+        "00:00:20.000 --> 00:00:23.000\nA proper-length cue here.\n"
+    )
+    payload = {
+        "vtt": src_vtt,
+        "media_path": str(media),
+        "mode": "audio",
+        "cue_count": 2,
+    }
+    (cache_dir / "deadbeef12345678.json").write_text(json.dumps(payload))
+    # Pre-write the disk .vtt so the repolish path's write succeeds AND
+    # so it matches a Job's output_path. The contents don't matter — the
+    # endpoint overwrites them.
+    disk_vtt.write_text(src_vtt, encoding="utf-8")
+
+    # Plant a Job pointing at the same on-disk .vtt with a known stale
+    # quality_score. After repolish, this score must change.
+    jobs_mod._jobs.clear()
+    j = jobs_mod.Job(
+        id="job-test", item_id="m1", item_name="movie",
+        target_lang="fr", provider="nllb", mode="audio",
+        status="succeeded", output_path=str(disk_vtt),
+        quality_score=42, quality_grade="F",
+    )
+    jobs_mod._jobs[j.id] = j
+
+    r = client.post("/api/cache/vtt/deadbeef12345678/repolish")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["disk_vtt_updated"] is True
+    assert body["jobs_refreshed"] == 1
+    assert isinstance(body["new_quality_score"], int)
+    assert body["new_quality_score"] != 42  # something changed
+    assert body["new_quality_grade"] in {"A", "B", "C", "D", "F"}
+
+    # The job record itself is updated, not just the response body.
+    refreshed = jobs_mod.get_job("job-test")
+    assert refreshed.quality_score == body["new_quality_score"]
+    assert refreshed.quality_grade == body["new_quality_grade"]
+
+    # The .stats.json sidecar reflects the new VTT too.
+    sidecar = cache_dir / "stats" / "deadbeef12345678.json"
+    assert sidecar.is_file()
+    sidecar_data = json.loads(sidecar.read_text())
+    assert sidecar_data["quality"]["score"] == body["new_quality_score"]
+
+    jobs_mod._jobs.clear()
+
+
 def test_update_check_endpoint_returns_current_version(client, monkeypatch):
     """/api/update/check returns a JSON payload that always has at
     least the current version. Backend errors surface as ``error``

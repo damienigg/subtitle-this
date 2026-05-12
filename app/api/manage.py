@@ -573,6 +573,7 @@ def cache_repolish_vtt(cache_key: str) -> dict:
     # recoverable when payload has ``media_path`` AND we can parse
     # ``target_lang`` + ``mode`` out of the NOTE header.
     disk_updated = False
+    disk_path: Path | None = None
     media_path = payload.get("media_path")
     if isinstance(media_path, str) and media_path:
         import re
@@ -602,10 +603,57 @@ def cache_repolish_vtt(cache_key: str) -> dict:
     def _count_cues(text: str) -> int:
         return len([1 for line in text.splitlines() if " --> " in line])
 
+    # ── Refresh derived artifacts so the Jobs table pill, the
+    #    cache_dir/stats/ sidecar, and the on-disk .vtt all agree.
+    # Without this, the Jobs table keeps showing the original
+    # pre-polish quality_score (frozen at job-completion time) while
+    # the stats page recomputes from the new .vtt and reports a
+    # different number — confusing and easy to miss.
+    jobs_refreshed = 0
+    new_score: int | None = None
+    new_grade: str | None = None
+    try:
+        from app import stats as stats_mod
+        from app import quality as quality_mod
+        record = stats_mod.compute_from_vtt(
+            new_vtt,
+            media_path=payload.get("media_path"),
+            cache_key=cache_key,
+            mode=payload.get("mode"),
+            detected_source_language=payload.get("detected_source_language"),
+            pipeline_metrics=payload.get("pipeline_metrics"),
+        )
+        q = quality_mod.compute_quality_score(record)
+        new_score, new_grade = q.score, q.grade
+
+        # Update Job records that point to this .vtt. The disk path is
+        # deterministic from media + target + mode, so every job that
+        # wrote the same .vtt shares the same output_path string.
+        if disk_updated and disk_path is not None:
+            target_path = str(disk_path)
+            for j in jobs.list_jobs(limit=500):
+                if j.output_path == target_path:
+                    j.quality_score = q.score
+                    j.quality_grade = q.grade
+                    jobs_refreshed += 1
+            if jobs_refreshed:
+                jobs._persist()
+
+        # Rewrite the .stats.json sidecar so the cache_dir/stats/<key>.json
+        # record matches the post-polish .vtt. write_cache_sidecar is
+        # idempotent and atomic — it's the same function the job runner
+        # uses at completion time, so the format stays consistent.
+        stats_mod.write_cache_sidecar(cache_key, record)
+    except Exception:
+        _log.warning("post-repolish score refresh failed", exc_info=True)
+
     return {
         "before_cue_count": _count_cues(old_vtt),
         "after_cue_count": _count_cues(new_vtt),
         "disk_vtt_updated": disk_updated,
+        "jobs_refreshed": jobs_refreshed,
+        "new_quality_score": new_score,
+        "new_quality_grade": new_grade,
     }
 
 
