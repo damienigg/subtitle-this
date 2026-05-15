@@ -258,17 +258,28 @@ _FIELD_META: list[dict[str, Any]] = [
          {"value": "chunked", "label": "CHUNKED — safe RAM, recommended when ON"},
          {"value": "full",    "label": "FULL — needs ≥ 12 GB free RAM"},
      ],
-     "summary": "OFF by default. Turn ON for action/sci-fi films where score buries dialogue (Inception, Dunkirk).",
+     "summary": "Only useful on stereo/mono sources. 5.1+ sources auto-skip this — center-channel extraction is more effective.",
      "details": "Splits the source audio into stems and feeds only the VOCALS stem to "
                 "Whisper. Score, ambience, and SFX are removed so Whisper transcribes "
-                "a clean speech signal — closes most of the 'climax dialog buried under "
-                "music' gap on score-heavy films.\n\n"
-                "• OFF (default) — no isolation. Best for dialog-driven dramas with "
-                "sparse music where the gain wouldn't justify the cost. Also automatic "
-                "for 5.1+ sources (center-channel extraction does the job for free).\n"
+                "a clean speech signal — closes the 'dialog buried under music' gap.\n\n"
+                "**Important automatic behaviour:** on 5.1+ sources the pipeline ALWAYS "
+                "skips this phase, regardless of the setting you pick below. The "
+                "front-center channel (FC) in a 5.1 mix carries dialogue ONLY by "
+                "industry convention — extracting it via ``pan=mono|c0=FC`` is faster "
+                "(~5 s of ffmpeg vs ~15–30 min of Demucs), produces cleaner audio "
+                "(no source separation artifacts), and Demucs on top of an already-"
+                "isolated mono signal is at best redundant, at worst harmful (it'd "
+                "have to downmix the 5.1 back to stereo first, undoing the mixer's "
+                "work). The Cache Explorer stats page shows when this auto-skip fired.\n\n"
+                "So the setting is meaningful **only for stereo or mono sources** — "
+                "older films, YouTube rips, music videos, podcast-style content. For "
+                "those, the choice is:\n\n"
+                "• OFF (default) — no isolation. Best for dialog-driven stereo "
+                "content with sparse music where the cost wouldn't be repaid.\n"
                 "• CHUNKED — recommended when ON. Processes audio in 5-min chunks, "
-                "capping peak RAM at ~1 GB regardless of film length. Sub-second seam "
-                "artifacts are invisible to Whisper (it resyncs every 30 s window).\n"
+                "capping peak RAM at ~1 GB regardless of film length. Sub-second "
+                "seam artifacts are invisible to Whisper (it resyncs every 30 s "
+                "window). Use this for stereo action films with continuous score.\n"
                 "• FULL — one apply_model pass over the whole audio. Slightly cleaner "
                 "separation (no seam artifacts), but peak RAM scales with film length "
                 "× num_stems. A 2.5 h 4-stem run needs ~16 GB peak — only pick this "
@@ -1149,7 +1160,11 @@ def _auto_improvements() -> list[dict]:
     return [
         {
             "name": "Center-channel extraction",
-            "detail": "5.1+ sources → ffmpeg pan=mono|c0=FC (dialogue-only audio)",
+            "detail": (
+                "5.1+ sources → ffmpeg pan=mono|c0=FC (dialogue-only audio); "
+                "supersedes Vocal Isolation when both apply (FC is cleaner + "
+                "much faster)"
+            ),
             "active": True,
         },
         {

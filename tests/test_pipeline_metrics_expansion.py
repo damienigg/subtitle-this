@@ -82,6 +82,36 @@ def test_audio_prep_extract_records_downmix_for_stereo(tmp_path, monkeypatch):
     assert sink["optimised_chain_failed"] is False
 
 
+def test_audio_prep_dataclass_carries_vocal_isolation_auto_skipped_flag():
+    """0.9.1 added a vocal_isolation_auto_skipped field so the stats page
+    can explain why the Vocal isolation block didn't render even though
+    the user enabled it in Settings. Pin the field name + default so a
+    rename doesn't silently break the template branch."""
+    m = AudioPrepMetrics(
+        source_channels=6,
+        source_channel_layout="5.1",
+        used_center_channel=True,
+        loudnorm_applied=True,
+        optimised_chain_failed=False,
+        vocal_isolation_auto_skipped=True,
+    )
+    assert m.vocal_isolation_auto_skipped is True
+    # Default must be False so legacy entries deserialize cleanly.
+    assert AudioPrepMetrics().vocal_isolation_auto_skipped is False
+    # Must round-trip through asdict / _pm_from_dict.
+    from app.transcript_cache import _pm_from_dict
+    payload = {"audio_prep": {
+        "source_channels": 6,
+        "source_channel_layout": "5.1",
+        "used_center_channel": True,
+        "loudnorm_applied": True,
+        "optimised_chain_failed": False,
+        "vocal_isolation_auto_skipped": True,
+    }}
+    revived = _pm_from_dict(payload)
+    assert revived.audio_prep.vocal_isolation_auto_skipped is True
+
+
 def test_audio_prep_extract_records_fallback_on_optimised_chain_failure(
     tmp_path, monkeypatch,
 ):

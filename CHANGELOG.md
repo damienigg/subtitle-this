@@ -7,6 +7,60 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-05-15
+
+UX clarification. Users were leaving `vocal_isolation_mode=chunked` in
+Settings and then wondering why the Vocal Isolation block never showed
+up on their 5.1 films. The code was already silently doing the right
+thing (auto-skip Demucs on 5.1+, use center-channel extraction instead),
+but the UI didn't say so. This release surfaces the decision in three
+places so the behaviour stops feeling magical.
+
+### Added
+
+- **`vocal_isolation_auto_skipped` field** on `AudioPrepMetrics`. True
+  when the user had `vocal_isolation_mode != "off"` in Settings but
+  the source was 5.1+ so the processor skipped Demucs in favour of
+  the cheaper FC-pan extraction.
+- **Auto-skip explanation row** on the Cache Explorer stats page's
+  Audio prep section. When the flag fires, the operator sees:
+  > Vocal isolation: **auto-skipped** — your settings had Vocal
+  > Isolation enabled, but the source is 5.1+ — the pipeline always
+  > prefers center-channel extraction for 5.1+ sources because FC is
+  > already dialogue-only by mix convention…
+
+### Changed
+
+- **`vocal_isolation_mode` help text in Settings** fully rewritten.
+  The previous copy used Inception as an example of "turn this ON" —
+  but Inception is 5.1 and Demucs is auto-skipped on it. New summary:
+  > Only useful on stereo/mono sources. 5.1+ sources auto-skip this
+  > — center-channel extraction is more effective.
+  Expanded details explain WHY: FC is dialogue-only by convention,
+  Demucs on top of a 5.1 source would have to downmix back to stereo
+  first (undoing the mixer's work).
+- **Active automatic improvements banner**: the Center-channel
+  extraction entry now reads "supersedes Vocal Isolation when both
+  apply" so the relationship is visible to anyone scanning Settings.
+
+### Why this matters
+
+The setting is global (lives in Settings, not per-job), but media
+libraries are heterogeneous — some films are 5.1, others stereo.
+Leaving CHUNKED enabled is *harmless* on a 5.1 film because the
+processor defers automatically. The previous UI didn't communicate
+that, so the natural conclusion was "I should disable this for
+Inception", which would also disable it for the stereo content
+where it actually helps. The 0.9.1 messaging fixes the confusion
+without changing any pipeline behaviour.
+
+### Tests
+
+- New test in `tests/test_pipeline_metrics_expansion.py` pins the
+  `vocal_isolation_auto_skipped` field name + default + JSON
+  round-trip through `_pm_from_dict`.
+- **525 tests passing** (was 524).
+
 ## [0.9.0] — 2026-05-15
 
 New feature — **Reference comparison**. The operator can now upload a

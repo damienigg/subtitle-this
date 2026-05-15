@@ -404,6 +404,20 @@
           </span>
         </td></tr>
         {% endif %}
+        {% if ap.vocal_isolation_auto_skipped %}
+        <tr><th>Vocal isolation</th><td>
+          <span class="status-pill ok">auto-skipped</span>
+          <span class="muted small">
+            (your settings had Vocal Isolation enabled, but the source is
+            5.1+ — the pipeline always prefers center-channel extraction
+            for 5.1+ sources because FC is already dialogue-only by mix
+            convention, and Demucs on top would be redundant and slower.
+            <strong>The setting is meaningful only for stereo or mono
+            sources</strong>; leaving it on is harmless on a mixed
+            library because it auto-defers like this.)
+          </span>
+        </td></tr>
+        {% endif %}
       </table>
     </section>
   {% endif %}

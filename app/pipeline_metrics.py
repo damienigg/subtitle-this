@@ -66,12 +66,19 @@ class AudioPrepMetrics:
       Reading this with ``used_center_channel`` lets the stats page
       surface "we tried center extraction but had to retry" vs
       "we never tried it" vs "it worked".
+    - ``vocal_isolation_auto_skipped`` (0.9.1+): True when the user
+      had ``vocal_isolation_mode != "off"`` in settings BUT the
+      source was 5.1+ so Demucs got skipped in favour of the cheaper,
+      cleaner FC-pan extraction. Surfaces on the stats page so the
+      operator understands why the Vocal isolation block they
+      enabled in Settings didn't actually run on this entry.
     """
     source_channels: int = 0
     source_channel_layout: str | None = None
     used_center_channel: bool = False
     loudnorm_applied: bool = False
     optimised_chain_failed: bool = False
+    vocal_isolation_auto_skipped: bool = False
 
 
 @dataclass

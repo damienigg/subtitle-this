@@ -267,6 +267,14 @@ def process(
             "used_center_channel": False,
             "loudnorm_applied": False,
             "optimised_chain_failed": False,
+            # True when settings.vocal_isolation_mode != "off" but we
+            # skipped Demucs because the source is 5.1+ (FC pan is
+            # cheaper and produces cleaner dialogue-only audio). The
+            # stats page surfaces this so the operator understands
+            # why the Vocal isolation block they enabled isn't visible.
+            "vocal_isolation_auto_skipped": (
+                vocal_isolation_enabled and channel_info.has_center
+            ),
         }
         if use_demucs:
             from app.pipeline import vocal_isolation as vi
@@ -414,6 +422,9 @@ def process(
             used_center_channel=bool(prep_stats.get("used_center_channel")),
             loudnorm_applied=bool(prep_stats.get("loudnorm_applied")),
             optimised_chain_failed=bool(prep_stats.get("optimised_chain_failed")),
+            vocal_isolation_auto_skipped=bool(
+                prep_stats.get("vocal_isolation_auto_skipped")
+            ),
         )
         if vocal_isolation_metrics is not None:
             transcription.pipeline_metrics.vocal_isolation = vocal_isolation_metrics
