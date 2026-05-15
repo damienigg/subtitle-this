@@ -7,6 +7,54 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.31] — 2026-05-15
+
+### Changed
+
+- **Vocal isolation Settings UI simplified to a single tri-state
+  knob.** Replaces the previous two-knob design
+  (``vocal_isolation_enabled`` checkbox + ``vocal_isolation_model``
+  select) with one ``vocal_isolation_mode`` select offering
+  **OFF / CHUNKED / FULL**:
+  - **OFF** — skip the phase, feed raw audio to Whisper.
+  - **CHUNKED** (recommended) — isolate vocals in chunks. Safe peak
+    RAM regardless of film length. Shows a "Chunk size (seconds)"
+    field below for tuning when needed.
+  - **FULL** — process the whole audio at once. Best quality (no
+    seam artifacts), but peak RAM scales with film length × num
+    stems (a 2.5 h 4-stem run needs ~16 GB). Only for hosts with
+    fat RAM headroom.
+
+  The Demucs model identifier (htdemucs / htdemucs_ft / mdx_extra_q)
+  is no longer in the UI — that complexity belongs to power users
+  who can override via the ``BABEL_VOCAL_ISOLATION_MODEL`` env var.
+  Default model stays ``htdemucs`` (the light bag-of-1, ~500 MB peak).
+
+### Migration
+
+- ``_collapse_vocal_isolation_enabled_to_mode`` runs at startup:
+  - ``vocal_isolation_enabled=True`` (legacy) → ``vocal_isolation_mode="chunked"``
+    (the safer of the two enable options).
+  - ``vocal_isolation_enabled=False`` → ``vocal_isolation_mode="off"``.
+  - Existing ``vocal_isolation_model`` values (if any user customized
+    in pre-0.7.31 settings) are preserved — still in the pydantic
+    model, just hidden from UI.
+  - Idempotent: if ``vocal_isolation_mode`` is already set, the
+    legacy bool is silently dropped.
+
+### Tests
+
+- 3 new tests in ``test_settings_migration.py`` pinning the migration
+  for the bool→tri-state mapping (True→chunked, False→off, conflict
+  resolution).
+- 2 new tests in ``test_vocal_isolation.py`` pinning the mode-driven
+  ``chunk_seconds`` dispatch (chunked → user's value forwarded;
+  full → 0 sentinel for no outer chunking).
+- ``test_submit_fail_fast`` updated to set the new
+  ``vocal_isolation_mode="chunked"`` instead of the legacy bool.
+- Full suite still green except for the pre-existing
+  ``test_jobs_list_initially_empty`` isolation issue.
+
 ## [0.7.30] — 2026-05-15
 
 ### Fixed

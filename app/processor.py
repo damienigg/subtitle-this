@@ -278,13 +278,18 @@ def process(
     # target_lang / provider / mode also hits the cached transcript.
     from app import transcript_cache
     transcript_content_fp = cache_mod.content_fingerprint(media)
+    # Derive the on/off bool used by the cache key from the tri-state
+    # mode setting. The cache treats FULL and CHUNKED as equivalent
+    # (both produce vocals-isolated audio; the sub-second seam
+    # artifacts between them don't change Whisper's cue extraction).
+    vocal_isolation_enabled = settings.vocal_isolation_mode != "off"
     transcription = transcript_cache.lookup(
         transcript_content_fp,
         settings.whisper_model,
         settings.whisper_backend,
         settings.vad_enabled,
         track.index,
-        vocal_isolation_enabled=bool(settings.vocal_isolation_enabled),
+        vocal_isolation_enabled=vocal_isolation_enabled,
     )
     transcript_from_cache = transcription is not None
     # Captures the Demucs metrics so the stats page can show "isolation
@@ -301,7 +306,7 @@ def process(
         # Choose the audio prep path: vocals-only (Demucs) or raw track.
         # Both yield the same shape — a 16 kHz mono WAV at a Path. STT
         # downstream doesn't care which one produced it.
-        if settings.vocal_isolation_enabled:
+        if vocal_isolation_enabled:
             from app.pipeline import vocal_isolation as vi
             audio_ctx = vi.isolate_vocals(
                 req.media_path, track.index,
@@ -333,7 +338,7 @@ def process(
             else:
                 wav_path = audio_handle
 
-            progress(8 if settings.vocal_isolation_enabled else 3,
+            progress(8 if vocal_isolation_enabled else 3,
                      "detecting language" if needs_detection_pre_pass else "transcribing")
             check_cancel()
             language_hint = track.language
@@ -342,9 +347,9 @@ def process(
                 detected = lang_detect.detect(wav_path)
                 if detected:
                     language_hint = detected
-                progress(10 if settings.vocal_isolation_enabled else 8, "transcribing")
+                progress(10 if vocal_isolation_enabled else 8, "transcribing")
                 check_cancel()
-            stt_base = 10 if settings.vocal_isolation_enabled else 8
+            stt_base = 10 if vocal_isolation_enabled else 8
             stt_span = 80 - stt_base
             transcription = stt.transcribe(
                 wav_path,
@@ -371,7 +376,7 @@ def process(
             settings.vad_enabled,
             track.index,
             transcription,
-            vocal_isolation_enabled=bool(settings.vocal_isolation_enabled),
+            vocal_isolation_enabled=vocal_isolation_enabled,
         )
 
     if not transcription.cues:

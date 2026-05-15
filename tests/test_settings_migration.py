@@ -158,3 +158,50 @@ def test_legacy_emby_url_is_renamed_to_media_server_url(fresh_store):
     assert loaded["media_server_type"] == "emby"   # backfilled
     assert "emby_url" not in loaded
     assert "emby_api_key" not in loaded
+
+
+def test_vocal_isolation_enabled_true_migrates_to_mode_chunked(fresh_store):
+    """0.7.31 collapsed the bool ``vocal_isolation_enabled`` into the
+    tri-state ``vocal_isolation_mode``. ``enabled=True`` maps to
+    ``"chunked"`` — the safer of the two enable options, since a user
+    who had it on probably did so on a typical 6 GB cgroup that would
+    OOM under the FULL mode."""
+    store, path = fresh_store
+    path.write_text(json.dumps({
+        "vocal_isolation_enabled": True,
+    }))
+
+    loaded = store._load()
+
+    assert loaded["vocal_isolation_mode"] == "chunked"
+    assert "vocal_isolation_enabled" not in loaded
+
+
+def test_vocal_isolation_enabled_false_migrates_to_mode_off(fresh_store):
+    """``enabled=False`` maps to ``mode="off"`` so the user's intent
+    (don't run Demucs) is preserved."""
+    store, path = fresh_store
+    path.write_text(json.dumps({
+        "vocal_isolation_enabled": False,
+    }))
+
+    loaded = store._load()
+
+    assert loaded["vocal_isolation_mode"] == "off"
+    assert "vocal_isolation_enabled" not in loaded
+
+
+def test_vocal_isolation_migration_respects_existing_mode(fresh_store):
+    """If both the old bool AND the new mode are present (e.g. a user
+    manually edited the file), the explicit new value wins and the
+    old bool is just dropped without rewriting."""
+    store, path = fresh_store
+    path.write_text(json.dumps({
+        "vocal_isolation_enabled": True,
+        "vocal_isolation_mode": "full",
+    }))
+
+    loaded = store._load()
+
+    assert loaded["vocal_isolation_mode"] == "full"
+    assert "vocal_isolation_enabled" not in loaded

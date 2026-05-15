@@ -42,31 +42,54 @@ class _EnvSettings(BaseSettings):
     # "does the film have a continuous loud score that drowns
     # dialogue?" Inception / Dunkirk / sci-fi action: yes, big win.
     # Dialog-driven dramas with sparse score: marginal win.
-    vocal_isolation_enabled: bool = False
-    # Demucs model identifier. Default ``htdemucs`` is a bag of ONE
-    # single model (~500 MB peak resident) — the original Hybrid
-    # Transformer Demucs. ``htdemucs_ft`` is a bag of FOUR fine-tuned
-    # stem-specialized models (~1.5 GB peak resident) with marginally
-    # better separation quality (~0.3 dB SDR improvement on MUSDB18,
-    # imperceptible for our Whisper-feed use case). ``mdx_extra_q`` is
-    # a quantized 2-stem (vocals/no_vocals) variant — even lighter
-    # (~800 MB resident), useful as a fallback when even htdemucs is
-    # too heavy. All download to ``HF_HOME`` on first run.
+    # Single user-facing tri-state for the vocal-isolation phase. The
+    # entire knob the UI exposes:
+    # - "off"     → skip the phase; Whisper sees raw audio.
+    # - "chunked" → isolate vocals in chunks of
+    #               ``vocal_isolation_chunk_seconds``. Safe peak RAM
+    #               regardless of film length (~750 MB per chunk on a
+    #               5-min chunk + model weights). Recommended default
+    #               for cgroup-constrained deploys (TrueNAS at 6 GB).
+    # - "full"    → isolate the whole audio at once. Best per-cue
+    #               quality (no seam artifacts at chunk boundaries)
+    #               but peak RAM scales with film length × num_stems
+    #               (a 2.5 h 4-stem run needs ~16 GB). Only for hosts
+    #               with fat RAM budgets.
     #
-    # Pre-0.7.30 default was briefly htdemucs_ft based on the
-    # (incorrect) assumption that ``htdemucs`` was the heavy bag and
-    # ``_ft`` was the light single — verified directly against
-    # demucs/remote/*.yaml that this is the opposite. Reverted to the
-    # lighter htdemucs default.
-    vocal_isolation_model: str = "htdemucs"
-    # How many seconds of audio to load into RAM per Demucs pass.
-    # ``apply_model`` peak memory scales with chunk_seconds × channels
-    # × samplerate × 4 stems × 4 bytes. At 300 s (5 min) on a 44.1 kHz
-    # stereo input: ~423 MB per chunk + ~330 MB model = ~750 MB peak,
-    # safely under the 6 GB cgroup. Without chunking, a 2.5 h film
-    # would need ~12.5 GB just for the output tensor. Lower this if
-    # you ever see "process restarted" during isolating-vocals.
+    # Older configs (pre-0.7.31) stored a separate bool
+    # ``vocal_isolation_enabled``; the
+    # ``_collapse_vocal_isolation_enabled_to_mode`` migration in this
+    # file maps ``enabled=True → mode="chunked"``,
+    # ``enabled=False → mode="off"`` so existing users don't lose
+    # their setting across the upgrade.
+    vocal_isolation_mode: str = "off"
+    # How many seconds of audio to load into RAM per Demucs pass when
+    # ``vocal_isolation_mode == "chunked"``. Hidden from the Settings
+    # UI unless that mode is selected. apply_model peak memory scales
+    # with chunk_seconds × channels × samplerate × num_stems × 4 bytes.
+    # At 300 s (5 min) on 44.1 kHz stereo with 4-stem output: ~423 MB
+    # per chunk + ~500 MB model = ~1 GB peak, safely under a 6 GB
+    # cgroup. Lower (e.g. 120) if you still see "process restarted"
+    # during isolating-vocals.
     vocal_isolation_chunk_seconds: int = 300
+    # Demucs model identifier. **Not exposed in the Settings UI** —
+    # tuning this is a power-user escape hatch only, set via the
+    # ``BABEL_VOCAL_ISOLATION_MODEL`` env var. The simplified UI hides
+    # this complexity entirely.
+    # - "htdemucs" (default): bag of ONE Hybrid Transformer Demucs
+    #   model (~500 MB peak resident). Baseline quality, lightest.
+    # - "htdemucs_ft": bag of FOUR fine-tuned stem-specialized models
+    #   (~1.5 GB peak resident). Marginally better (~0.3 dB SDR uplift
+    #   on MUSDB18), imperceptible for Whisper-feed use. Set this if
+    #   you have RAM headroom and want the last few percent.
+    # - "mdx_extra_q": quantized 2-stem variant (vocals/no_vocals
+    #   only). Even lighter (~800 MB peak), useful fallback when even
+    #   htdemucs is too heavy on a constrained host.
+    # Verified directly against demucs/remote/*.yaml — htdemucs is
+    # the LIGHT bag-of-1, htdemucs_ft is the HEAVY bag-of-4. The
+    # 0.7.29 release got this backwards; 0.7.30 corrected the
+    # default; 0.7.31 made it env-only to stop confusing users.
+    vocal_isolation_model: str = "htdemucs"
 
     # STT
     whisper_backend: str = "cpu"
@@ -622,6 +645,29 @@ def _rename_emby_to_media_server(data: dict) -> dict:
     return data
 
 
+def _collapse_vocal_isolation_enabled_to_mode(data: dict) -> dict:
+    """0.7.31 collapsed the two-knob design (``vocal_isolation_enabled``
+    bool + ``vocal_isolation_model``) into a single tri-state user
+    knob ``vocal_isolation_mode`` (off / full / chunked). The model
+    identifier moves out of the UI entirely (env-var override only).
+
+    Migration:
+    - enabled=True  → mode="chunked"  (the safer of the two enable
+      options — won't OOM on a 6 GB cgroup like "full" would)
+    - enabled=False → mode="off"
+    - vocal_isolation_model field is left alone if already present;
+      ``_drop_unknown_keys`` won't strip it since it's still in the
+      pydantic model.
+
+    Idempotent: if ``vocal_isolation_mode`` is already in data, the
+    old ``vocal_isolation_enabled`` is just popped without rewrite."""
+    if "vocal_isolation_enabled" in data:
+        old = data.pop("vocal_isolation_enabled")
+        if "vocal_isolation_mode" not in data:
+            data["vocal_isolation_mode"] = "chunked" if old else "off"
+    return data
+
+
 def _drop_unknown_keys(data: dict) -> dict:
     """Remove keys that aren't in the current pydantic model — residue
     from past renames where the old key wasn't explicitly popped, or
@@ -642,6 +688,7 @@ _MIGRATIONS: list[Callable[[dict], dict]] = [
     _split_unified_llm_into_per_function_slots,
     _drop_shared_anthropic_api_key,
     _rename_emby_to_media_server,
+    _collapse_vocal_isolation_enabled_to_mode,
     _drop_unknown_keys,
 ]
 

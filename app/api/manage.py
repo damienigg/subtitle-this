@@ -142,27 +142,26 @@ def submit_item_job(
     except BadRequest as e:
         raise ValueError(str(e)) from e
 
-    # Fail fast when vocal_isolation_enabled is set but the demucs
+    # Fail fast when vocal isolation is requested but the demucs
     # package isn't actually importable in this image. Without this
     # check the job would queue, run for a few seconds, then fail with
     # "demucs is not installed" deep in the pipeline. Bouncing the
     # submit returns the error to the UI immediately and tells the
-    # operator the actual fix (rebuild image with the vocal-isolation
-    # extra, or toggle the setting off).
-    if settings.vocal_isolation_enabled:
+    # operator the actual fix.
+    if settings.vocal_isolation_mode != "off":
         from app.pipeline import vocal_isolation as vi
         ok, err = vi.is_available()
         if not ok:
             raise ValueError(
-                "Vocal isolation is ON in Settings but `demucs` is not "
-                "usable in this container. If you're on the GHCR image: "
-                "`docker compose pull && docker compose up -d` to grab "
-                "a build that ships the vocal-isolation extra (every "
-                "image from 0.7.27 onward includes it). If you build "
-                "your own image: ensure `demucs>=4.0` is installed and "
-                "that `from demucs.pretrained import get_model` works. "
-                "Otherwise, turn off `vocal_isolation_enabled` in "
-                f"Settings. Import error: {err}"
+                "Vocal isolation is enabled in Settings but `demucs` "
+                "is not usable in this container. If you're on the "
+                "GHCR image: `docker compose pull && docker compose "
+                "up -d` to grab a build that ships the vocal-isolation "
+                "extra (every image from 0.7.27 onward includes it). "
+                "If you build your own image: ensure `demucs>=4.0` is "
+                "installed and that `from demucs.pretrained import "
+                "get_model` works. Otherwise, set `vocal_isolation_mode` "
+                f"to 'off' in Settings. Import error: {err}"
             )
 
     media = Path(item.path)

@@ -115,11 +115,16 @@ def fake_separate(monkeypatch):
 
     Returns the (model, raw_wav, out_path) tuple of each call so tests
     can verify the model + paths threaded through correctly."""
-    calls: list[tuple[_FakeModel, Path, Path]] = []
+    calls: list[dict] = []
 
     def fake_streaming(model, raw_wav: Path, out_path: Path,
                        *, chunk_seconds, progress_within_phase, check_cancel):
-        calls.append((model, raw_wav, out_path))
+        calls.append({
+            "model": model,
+            "raw_wav": raw_wav,
+            "out_path": out_path,
+            "chunk_seconds": chunk_seconds,
+        })
         # Fire a few progress ticks so the progress-callback test sees
         # within-phase advancement, not just the outer 0.0/1.0 anchors.
         progress_within_phase(0.0)
@@ -194,18 +199,18 @@ def test_isolate_vocals_yields_wav_path_present_during_block(
     with vi.isolate_vocals("/m/film.mkv", 0) as result:
         assert result.wav_path.is_file()
         assert result.wav_path.read_bytes() == b"FAKE_VOCALS_WAV"
-        # Default model is whatever settings.vocal_isolation_model holds
-        # (htdemucs_ft since 0.7.29). The test asserts the result carries
-        # SOME model name, not the specific default — that's a settings
-        # concern, not a phase-wiring concern.
+        # The result carries SOME model name (whatever
+        # settings.vocal_isolation_model holds). Asserting the
+        # specific value is a settings concern, not a phase-wiring
+        # concern — the lifecycle test pins the wiring.
         assert result.model
         # _separate_streaming got called with the loaded model and the
         # ffmpeg-extracted WAV plus the prepared output path.
         assert len(fake_separate) == 1
-        passed_model, passed_raw, passed_out = fake_separate[0]
-        assert isinstance(passed_model, _FakeModel)
-        assert passed_raw.name.endswith(".wav")
-        assert passed_out == result.wav_path
+        c = fake_separate[0]
+        assert isinstance(c["model"], _FakeModel)
+        assert c["raw_wav"].name.endswith(".wav")
+        assert c["out_path"] == result.wav_path
 
 
 def test_isolate_vocals_releases_model_before_yield(
@@ -348,14 +353,62 @@ def test_release_model_is_idempotent():
     assert vi._model is None
 
 
+# ── Mode-driven chunk_seconds dispatch ────────────────────────────────────
+
+
+def test_mode_chunked_passes_user_chunk_seconds(
+    fake_load_model, fake_separate, fake_ffmpeg, cache_dir, monkeypatch
+):
+    """When ``vocal_isolation_mode == "chunked"`` the user's configured
+    chunk size is forwarded to _separate_streaming. The default 300 s
+    is what protects 6 GB cgroups from the apply_model OOM."""
+    monkeypatch.setattr(
+        config_mod.settings, "_overrides",
+        {
+            **config_mod.settings._overrides,
+            "vocal_isolation_mode": "chunked",
+            "vocal_isolation_chunk_seconds": 120,
+        },
+    )
+    with vi.isolate_vocals("/m/film.mkv", 0):
+        pass
+    assert len(fake_separate) == 1
+    assert fake_separate[0]["chunk_seconds"] == 120
+
+
+def test_mode_full_passes_zero_chunk_seconds(
+    fake_load_model, fake_separate, fake_ffmpeg, cache_dir, monkeypatch
+):
+    """``vocal_isolation_mode == "full"`` is the sentinel for
+    "no outer chunking — process the whole audio in one apply_model
+    call". The isolate_vocals wrapper converts that to chunk_seconds=0,
+    which _separate_streaming interprets as "single chunk covers
+    everything". Pinning this avoids a future refactor accidentally
+    sending the user's configured 300 s through when mode=full."""
+    monkeypatch.setattr(
+        config_mod.settings, "_overrides",
+        {
+            **config_mod.settings._overrides,
+            "vocal_isolation_mode": "full",
+            # User's configured chunk size should be IGNORED in full mode.
+            "vocal_isolation_chunk_seconds": 300,
+        },
+    )
+    with vi.isolate_vocals("/m/film.mkv", 0):
+        pass
+    assert len(fake_separate) == 1
+    assert fake_separate[0]["chunk_seconds"] == 0
+
+
 # ── Submit-time fail-fast ──────────────────────────────────────────────────
 
 
 def test_submit_fail_fast_when_isolation_on_but_demucs_missing(monkeypatch):
-    """The job-submit helper refuses upfront when vocal_isolation_enabled
-    is True but demucs isn't installed — so the operator sees the fix
-    in the UI submit response instead of after the job briefly queues
-    and then fails with the same import error deep in the pipeline."""
+    """The job-submit helper refuses upfront when vocal isolation is
+    enabled (mode != "off") but demucs isn't installed — so the
+    operator sees the fix in the UI submit response instead of after
+    the job briefly queues and then fails with the same import error
+    deep in the pipeline."""
     from app import config as config_mod
     from app.api.manage import submit_item_job
     from app.server import MediaItem
@@ -368,7 +421,7 @@ def test_submit_fail_fast_when_isolation_on_but_demucs_missing(monkeypatch):
     vi._model_name_cached = None
     monkeypatch.setattr(
         config_mod.settings, "_overrides",
-        {**config_mod.settings._overrides, "vocal_isolation_enabled": True},
+        {**config_mod.settings._overrides, "vocal_isolation_mode": "chunked"},
     )
 
     item = MediaItem(id="item1", name="Film", path="/m/film.mkv", type="Movie")

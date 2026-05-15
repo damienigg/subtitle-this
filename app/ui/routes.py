@@ -295,55 +295,48 @@ _FIELD_META: list[dict[str, Any]] = [
              "files completely pristine."},
 
     # ── Vocal isolation (Demucs) ──────────────────────────────────────────────
-    {"key": "vocal_isolation_enabled", "section": "Speech-to-Text",
-     "label": "Vocal isolation before STT (Demucs)",
-     "type": "checkbox",
-     "help": "Splits the source audio into stems and keeps only the "
-             "VOCALS stem before feeding it to Whisper. The score, "
-             "ambience, and SFX are removed so Whisper transcribes a "
-             "clean speech signal. Closes most of the 'climax dialog "
-             "buried under music' gap on action/sci-fi films "
-             "(Inception, Dunkirk, Tenet). \n\n"
-             "Costs: an extra 8-30 min of CPU per 2 h film (Demucs "
-             "runs ~4-10× realtime on a 4-core container) and "
-             "requires the optional `demucs` package in the image "
-             "(`pip install demucs>=4.0`). The model runs as a "
-             "distinct phase BEFORE Whisper loads — when STT starts, "
-             "Demucs has already released its ~1 GB of RAM. \n\n"
-             "Heuristic for when to turn this on: continuous loud "
-             "score that drowns dialogue. Marginal on dialog-driven "
-             "dramas with sparse music."},
-    {"key": "vocal_isolation_model", "section": "Speech-to-Text",
-     "label": "Demucs model", "type": "select",
-     "show_if": {"field": "vocal_isolation_enabled", "equals": "true"},
+    # Single user-facing knob. The model identifier (htdemucs vs
+    # htdemucs_ft vs mdx_extra_q) and other complexity is hidden —
+    # power users override via the BABEL_VOCAL_ISOLATION_MODEL env var.
+    {"key": "vocal_isolation_mode", "section": "Speech-to-Text",
+     "label": "Vocal isolation (Demucs)",
+     "type": "select",
      "options": [
-         {"value": "htdemucs",
-          "label": "htdemucs · [~500 MB peak · 4-stem · recommended] single model, lightest 4-stem option"},
-         {"value": "htdemucs_ft",
-          "label": "htdemucs_ft · [~1.5 GB peak · 4-stem · marginally better] bag of 4 stem-specialized models, ~0.3 dB SDR uplift"},
-         {"value": "mdx_extra_q",
-          "label": "mdx_extra_q · [~800 MB peak · 2-stem · fallback] quantized vocals/no_vocals only — use if even htdemucs is too heavy"},
+         {"value": "off",
+          "label": "OFF — skip the phase, feed raw audio to Whisper"},
+         {"value": "chunked",
+          "label": "CHUNKED — isolate vocals in chunks (safe RAM, recommended)"},
+         {"value": "full",
+          "label": "FULL — isolate the whole audio at once (best quality, needs ≥12 GB RAM)"},
      ],
-     "help": "htdemucs is the recommended default — a single Hybrid "
-             "Transformer Demucs model with the lightest RAM footprint "
-             "for a 4-stem result. htdemucs_ft is a bag of FOUR fine-"
-             "tuned stem-specialized models with marginally better "
-             "separation (~0.3 dB SDR improvement on MUSDB18) but 3× "
-             "the RAM — pick this only if you have headroom and care "
-             "about the last few percent of quality. mdx_extra_q is the "
-             "lightest option (2-stem only, quantized) — useful as a "
-             "fallback when even htdemucs OOMs on a tight cgroup."},
+     "help": "Splits the source audio into stems and feeds only the "
+             "VOCALS stem to Whisper. Score, ambience, and SFX are "
+             "removed so Whisper transcribes a clean speech signal. "
+             "Closes most of the 'climax dialog buried under music' "
+             "gap on action/sci-fi films (Inception, Dunkirk, Tenet). "
+             "\n\n"
+             "OFF — no isolation. Best for dialog-driven dramas with "
+             "sparse music where the gain wouldn't justify the cost.\n\n"
+             "CHUNKED — recommended. Processes the audio in 5-minute "
+             "chunks, capping peak RAM at ~1 GB regardless of film "
+             "length. The sub-second seam artifacts between chunks are "
+             "invisible to Whisper (it resyncs every 30s window). Safe "
+             "on a 6 GB cgroup.\n\n"
+             "FULL — processes the whole film in one apply_model call. "
+             "Slightly cleaner separation (no seam artifacts at all), "
+             "but peak RAM scales with film length × num_stems. A 2.5 h "
+             "4-stem run needs ~16 GB peak — only pick this if your "
+             "host has fat RAM headroom (32+ GB)."},
     {"key": "vocal_isolation_chunk_seconds", "section": "Speech-to-Text",
-     "label": "Demucs chunk size (seconds)", "type": "number",
-     "show_if": {"field": "vocal_isolation_enabled", "equals": "true"},
+     "label": "Chunk size (seconds)", "type": "number",
+     "show_if": {"field": "vocal_isolation_mode", "equals": "chunked"},
      "help": "How many seconds of audio to load and process per "
              "Demucs pass. apply_model peak memory scales linearly "
              "with this. 300 (5 min) is the default — caps peak at "
-             "~750 MB on top of the model weights, leaving plenty of "
-             "room under a 6 GB cgroup. Drop to 120 (2 min) if you're "
-             "still seeing 'process restarted' during isolating-"
-             "vocals. Going below 60 starts hurting separation quality "
-             "near chunk boundaries."},
+             "~1 GB total, leaving plenty of room under a 6 GB cgroup. "
+             "Drop to 120 (2 min) if you're still seeing 'process "
+             "restarted' during isolating-vocals. Going below 60 "
+             "starts hurting separation quality near chunk boundaries."},
 
     # ── Speech-to-Text ────────────────────────────────────────────────────────
     {"key": "whisper_backend", "section": "Speech-to-Text",
@@ -1257,19 +1250,19 @@ def _field_warnings() -> dict[str, str]:
     Cheap probe — just a try-import — so re-evaluating per page render
     is fine."""
     warnings: dict[str, str] = {}
-    if settings.vocal_isolation_enabled:
+    if settings.vocal_isolation_mode != "off":
         from app.pipeline import vocal_isolation as vi
         ok, err = vi.is_available()
         if not ok:
-            warnings["vocal_isolation_enabled"] = (
+            warnings["vocal_isolation_mode"] = (
                 "demucs is NOT usable in this image. Any job submitted "
-                "while this is ON will fail fast at queue time. Fix: "
-                "if you run the GHCR image, `docker compose pull && "
-                "docker compose up -d` (every image from 0.7.27 onward "
-                "exposes a working vocal-isolation path). If you build "
-                "your own image, ensure `demucs>=4.0` is installed and "
-                "that `from demucs.pretrained import get_model` works. "
-                "Otherwise, turn this OFF."
+                "while this is enabled will fail fast at queue time. "
+                "Fix: if you run the GHCR image, `docker compose pull "
+                "&& docker compose up -d` (every image from 0.7.27 "
+                "onward exposes a working vocal-isolation path). If "
+                "you build your own image, ensure `demucs>=4.0` is "
+                "installed and that `from demucs.pretrained import "
+                "get_model` works. Otherwise, set this back to OFF."
             )
     return warnings
 

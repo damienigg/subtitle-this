@@ -267,7 +267,16 @@ def _separate_streaming(
     with sf.SoundFile(str(raw_wav)) as src:
         sr = src.samplerate
         total_samples = src.frames
-        chunk_samples = max(1, int(chunk_seconds) * sr)
+        # ``chunk_seconds <= 0`` is the sentinel for FULL mode (process
+        # the whole audio in one shot, no outer chunking). The loop
+        # body is identical in both modes — when chunk_samples covers
+        # the whole file, the first iteration reads everything and the
+        # ``while pos < total_samples`` exits after one pass. This
+        # keeps both modes on a single code path.
+        chunk_samples = (
+            total_samples if chunk_seconds <= 0
+            else max(1, int(chunk_seconds) * sr)
+        )
 
         # Build the resampler once; the same nn.Module instance is
         # reused on every chunk so the kaiser_window kernel is computed
@@ -392,9 +401,17 @@ def isolate_vocals(
             within = max(0.0, min(1.0, within))
             progress(0.2 + 0.75 * within)
 
+        # Mode "full" → pass 0 to _separate_streaming as the
+        # "no outer chunking" sentinel. Mode "chunked" → use the
+        # user-configured chunk size. The cache/processor layer
+        # already guaranteed we only get here when mode != "off".
+        if settings.vocal_isolation_mode == "full":
+            chunk_secs = 0
+        else:
+            chunk_secs = int(settings.vocal_isolation_chunk_seconds)
         audio_seconds_processed = _separate_streaming(
             model, raw_wav, vocals_wav,
-            chunk_seconds=int(settings.vocal_isolation_chunk_seconds),
+            chunk_seconds=chunk_secs,
             progress_within_phase=_within,
             check_cancel=check_cancel,
         )
