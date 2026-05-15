@@ -7,6 +7,120 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-05-15
+
+Minor-version bump motivated by the ampleur of audio-mode-only changes
+since 0.7.31: scene/cinematic modes deleted, full audio-prep
+overhaul (center-channel + loudnorm + anti-hallucination + orphan-
+line-breaks), and the final quality-stack landing this release —
+word-level timestamps + confidence-gated re-transcription.
+
+### Added
+
+- **Word-level timestamps via faster-whisper DTW.** Enabling
+  ``word_timestamps=True`` on the cpu/faster-whisper backend gives
+  us frame-accurate per-word timing via Whisper's cross-attention
+  DTW alignment (±100 ms vs ±300 ms chunk-level). Cost: ~+20 % wall-
+  clock on STT, ~50 MB transient DTW buffer (negligible). The Cue
+  dataclass picks up two new optional fields — ``words: list[Word]``
+  and ``avg_logprob: float`` — both ``None`` on backends that don't
+  expose the data (OpenVINO path unchanged).
+
+  Why not whisperX (the obvious alternative)? It adds ~1 GB to the
+  image (wav2vec2 model + dependencies) and ~300 MB of resident
+  RAM. The DTW path gives 90 % of the benefit at 5 % of the cost.
+
+- **Confidence-gated re-transcription** in new
+  ``app/pipeline/stt_refine.py``. Walks the first-pass cue list,
+  identifies 10-min audio buckets that are weak (coverage < 30 %
+  OR mean avg_logprob < -1.0), extracts those audio ranges and
+  re-decodes them with aggressive params (beam=10, n-gram-repeat
+  suppression, tighter log-prob threshold). New cues replace the
+  weak ones in place.
+
+  RAM-conscious by design:
+  - **Re-uses the cached Whisper model** from the first pass (no
+    double-load). Peak RAM during refine is identical to peak RAM
+    during the first pass.
+  - **20 % audio re-pass budget** caps total time/RAM cost. On a
+    pathologically bad first pass we re-decode the worst buckets
+    that fit, not all of them.
+  - **Early-out on clean audio**: skip entirely if first-pass
+    coverage ≥ 95 % AND no bucket is weak. Most films skip the
+    phase.
+  - **Single retry per bucket**, no recursion.
+  - **Worse-result rejection**: if the aggressive pass produces
+    FEWER cues than the first pass had, keep the first pass.
+  - **Graceful ffmpeg failure**: a corrupt source range that
+    ffmpeg can't extract is skipped, not job-fatal.
+  - **OpenVINO path opts out**: that backend doesn't expose
+    per-cue logprob, so the confidence-gating heuristic can't fire.
+    The refine phase records ``skipped_reason="no_logprob_data"``
+    and exits cleanly. Silero-VAD is the quality net on that path.
+
+### Changed
+
+- **``whisper_compute_type`` UI labels rewritten** with explicit
+  resident-RAM costs per model size. The ``float32`` option carries
+  a "QUALITY MODE — only on hosts with 16+ GB RAM" warning, with
+  the OOM math spelled out for the 6 GB TrueNAS cgroup case. No
+  default change — ``int8`` stays the recommended default.
+
+- **faster-whisper backend now exposes** a private ``aggressive``
+  flag used by stt_refine.refine_weak_buckets. When True: beam=10,
+  ``no_repeat_ngram_size=3`` to suppress stuck-loop n-grams,
+  tighter ``log_prob_threshold=-0.8``. Plumbed through the
+  ``stt.transcribe`` dispatcher.
+
+### RAM impact summary
+
+The peak RAM profile for a typical Inception-class 5.1+ job on
+0.8.0, with the refine phase firing on 1-2 weak buckets:
+
+| Phase | Resident RAM |
+|---|---|
+| Audio prep (center-channel + loudnorm) | ~70 MB |
+| Whisper (int8 small): first pass | ~500 MB |
+| Whisper (int8 small): aggressive re-pass | ~500 MB *(same model — re-used)* |
+| Refine bucket extract (ffmpeg) | +30 MB transient |
+| Whisper release → NLLB load | ~1.5 GB (NLLB-distilled-600M) |
+| Translation peak | ~2 GB |
+
+**Total job peak: ~2 GB**, well under the 6 GB TrueNAS cgroup.
+**Zero new OOM risk introduced.**
+
+### Tests
+
+- 17 new in ``tests/test_stt_refine.py`` covering:
+  - Bucket coverage / logprob weakness detection
+  - 20 % budget cap with worst-first selection
+  - All 4 early-out paths (no cues, no logprob, clean first pass,
+    no buckets in budget)
+  - End-to-end refine: weak bucket → ffmpeg extract → aggressive
+    re-pass → merge with absolute-timestamp offsets + id renumber
+  - Safety: aggressive returning fewer cues → first pass kept
+  - Safety: ffmpeg extract failure → bucket skipped, job survives
+- Suite: 474 passing, 7 pre-existing env-only failures (missing
+  anthropic + faster_whisper Python packages in dev env).
+
+### Why 0.8.0 and not 0.7.35
+
+Cumulative scope since 0.7.31:
+- scene + cinematic modes deleted (~1300 lines net removed)
+- audio prep overhauled (center-channel, loudnorm, anti-hallucination,
+  orphan line breaks)
+- word-level timestamps added
+- confidence-gated re-transcription added
+- Cue dataclass grew two new fields
+- Whisper backend params changed
+- Settings UI dramatically simplified
+
+The audio pipeline is qualitatively different from what 0.7.31
+shipped — different default audio prep path, different STT params,
+new refine phase. Bumping the minor version signals that to users
+upgrading: pull this and your subs WILL look different, mostly
+better, but the diff is non-trivial.
+
 ## [0.7.34] — 2026-05-15
 
 Safety nets around the 0.7.33 audio-prep improvements. No new

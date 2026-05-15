@@ -308,12 +308,54 @@ def process(
                 check_cancel=check_cancel,
             )
 
-        # Anti-hallucination pass on the raw STT cues. Drops the
-        # YouTube-corpus-tail signature phrases ("Thanks for watching.",
-        # "Subscribe.", etc.) that Whisper falls back to on silence,
-        # plus stuck-loop repetitions ("yeah yeah yeah yeah"). See
-        # anti_hallucination.py for the full list + rationale. Cue
-        # ids are renumbered to stay contiguous post-filter.
+        # Confidence-gated re-transcription pass (0.8.0). Walks the
+        # first-pass cue list, identifies 10-min audio buckets that are
+        # weak (coverage < 30 % OR mean avg_logprob < -1.0), and re-
+        # decodes those ranges with aggressive params. Safety: capped
+        # at 20 % of audio re-passed, re-uses the cached Whisper model
+        # (no double-load), keeps first-pass result if the re-pass
+        # produces fewer cues. See stt_refine.py for the full safety
+        # contract. Runs BEFORE anti-hallucination so the filter
+        # operates on the post-refine cue list (catches any new
+        # hallucinations the aggressive re-pass produced).
+        from app.pipeline import stt_refine
+        # Audio duration estimate: max cue end OR known WAV length.
+        # If the wav_path is still resident (it's not — the with-block
+        # closed it above), we'd ffprobe it; using cue end is good
+        # enough for bucket boundaries.
+        if transcription.cues:
+            audio_dur = max(c.end for c in transcription.cues)
+            transcription, refine_stats = stt_refine.refine_weak_buckets(
+                transcription,
+                req.media_path,
+                track.index,
+                audio_dur,
+                language_hint=transcription.detected_language,
+                progress=_scaled(progress, base=78, span=2, stage="refining"),
+                check_cancel=check_cancel,
+            )
+            from app import pipeline_metrics as pm_mod
+            if transcription.pipeline_metrics is None:
+                transcription.pipeline_metrics = pm_mod.PipelineMetrics()
+            if transcription.pipeline_metrics.whisper is None:
+                transcription.pipeline_metrics.whisper = pm_mod.WhisperMetrics()
+            transcription.pipeline_metrics.whisper.refine = pm_mod.RefineMetrics(
+                buckets_evaluated=refine_stats.buckets_evaluated,
+                buckets_weak=refine_stats.buckets_weak,
+                buckets_refined=refine_stats.buckets_refined,
+                cues_added=refine_stats.cues_added,
+                cues_replaced=refine_stats.cues_replaced,
+                audio_seconds_refined=refine_stats.audio_seconds_refined,
+                skipped_reason=refine_stats.skipped_reason,
+            )
+
+        # Anti-hallucination pass on the (post-refine) cue list. Drops
+        # the YouTube-corpus-tail signature phrases ("Thanks for
+        # watching.", "Subscribe.", etc.) that Whisper falls back to
+        # on silence, plus stuck-loop repetitions ("yeah yeah yeah
+        # yeah"). See anti_hallucination.py for the full list +
+        # rationale. Cue ids are renumbered to stay contiguous
+        # post-filter.
         from app.pipeline import anti_hallucination
         filtered_cues, ah_stats = anti_hallucination.filter_cues(transcription.cues)
         transcription.cues = filtered_cues
@@ -321,8 +363,6 @@ def process(
             from app import pipeline_metrics as pm_mod
             if transcription.pipeline_metrics is None:
                 transcription.pipeline_metrics = pm_mod.PipelineMetrics()
-            # Stash on whisper metrics rather than introducing a whole
-            # new metrics block — it's a single small stat.
             if transcription.pipeline_metrics.whisper is None:
                 transcription.pipeline_metrics.whisper = pm_mod.WhisperMetrics()
             transcription.pipeline_metrics.whisper.hallucinations_dropped = (

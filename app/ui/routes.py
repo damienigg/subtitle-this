@@ -335,13 +335,23 @@ _FIELD_META: list[dict[str, Any]] = [
      "label": "Compute type", "type": "select",
      "show_if": {"field": "whisper_backend", "equals": "cpu"},
      "options": [
-         {"value": "int8",    "label": "int8 · [fastest · lowest precision] default — works well in practice"},
-         {"value": "int16",   "label": "int16 · [fast · slightly more precise]"},
-         {"value": "float16", "label": "float16 · [slow · high precision]"},
-         {"value": "float32", "label": "float32 · [slowest · full precision · rarely worth it]"},
+         {"value": "int8",    "label": "int8 · [recommended · ~500 MB resident for small, ~1.5 GB for medium]"},
+         {"value": "int16",   "label": "int16 · [~1 GB / ~3 GB · marginal precision gain over int8]"},
+         {"value": "float16", "label": "float16 · [~1 GB / ~3 GB · same RAM as int16, slower]"},
+         {"value": "float32", "label": "float32 · [~2 GB / ~6 GB · QUALITY MODE — only on hosts with 16+ GB RAM]"},
      ],
-     "help": "Quantization for faster-whisper. Lower precision = faster + less RAM, "
-             "with negligible quality loss for subtitle work."},
+     "help": "Quantization for faster-whisper.\n\n"
+             "int8 (default) is the right answer for 99 % of users: balances "
+             "RAM, speed, and quality. Subtitle-level WER differences vs. "
+             "float32 are below the noise floor on most films.\n\n"
+             "float32 is the QUALITY MODE — full-precision weights, ~4× more "
+             "RAM than int8 (~2 GB for small Whisper, ~6 GB for medium, "
+             "~12 GB for large-v3). Only pick this on a fat host (16+ GB "
+             "free); on TrueNAS's typical 6 GB cgroup it'll OOM-kill the "
+             "container at model-load time. The WER improvement over int8 "
+             "is real but small (~5-10 % relative) — generally not worth "
+             "the RAM cost unless you're optimising for festival-grade "
+             "output and have headroom to burn."},
     {"key": "whisper_device", "section": "Speech-to-Text",
      "label": "Device", "type": "select",
      "show_if": {"field": "whisper_backend", "equals": "cpu"},

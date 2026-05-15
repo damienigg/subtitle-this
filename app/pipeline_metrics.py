@@ -112,6 +112,31 @@ class PackingMetrics:
 
 
 @dataclass
+class RefineMetrics:
+    """Telemetry from the 0.8.0 confidence-gated re-transcription pass.
+    Surfaces on the stats page so the operator can see when the refine
+    phase fired and how much it changed.
+
+    - ``buckets_weak``: how many 10-min buckets the first pass produced
+      that were below the coverage or logprob threshold.
+    - ``buckets_refined``: how many of those weak buckets we actually
+      re-decoded (capped at 20 % of total audio).
+    - ``cues_added`` / ``cues_replaced``: delta cues from the merge.
+    - ``audio_seconds_refined``: how much audio we re-passed.
+    - ``skipped_reason``: populated when the whole phase was a no-op
+      (``"first_pass_clean"``, ``"no_logprob_data"`` for OpenVINO,
+      ``"no_buckets_in_budget"``, etc.).
+    """
+    buckets_evaluated: int = 0
+    buckets_weak: int = 0
+    buckets_refined: int = 0
+    cues_added: int = 0
+    cues_replaced: int = 0
+    audio_seconds_refined: float = 0.0
+    skipped_reason: str | None = None
+
+
+@dataclass
 class WhisperMetrics:
     """Counts what the decoder produced before downstream filters.
     Degenerate-timestamp drops are the well-known turbo-on-packed-
@@ -121,9 +146,14 @@ class WhisperMetrics:
     0.7.33 anti-hallucination filter (blacklist hits + n-gram
     repetition stuck-loops). Spikes signal that Whisper had a hard
     time on this audio — typically: long silent stretches mistaken
-    for low-confidence speech."""
+    for low-confidence speech.
+
+    ``refine`` is the 0.8.0 confidence-gated re-transcription
+    sub-metrics block. ``None`` when the refine phase didn't run
+    (cache hit, no cues at all)."""
     cue_drop_degenerate_timestamp_count: int = 0
     hallucinations_dropped: int = 0
+    refine: RefineMetrics | None = None
 
 
 @dataclass

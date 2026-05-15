@@ -35,11 +35,44 @@ def try_malloc_trim() -> None:
 
 
 @dataclass
+class Word:
+    """One word from a faster-whisper word-timestamps decode.
+
+    - ``start`` / ``end``: audio-anchored timestamps, frame-accurate
+      via Whisper's cross-attention DTW (±100 ms vs. ±300 ms for
+      chunk-level timing).
+    - ``probability``: the model's confidence in this word, 0..1.
+      Aggregated to ``Cue.avg_logprob`` for the confidence-gated
+      re-transcription pass — segments with consistently low word
+      probabilities are the ones the 0.8.0 retry-pass attacks.
+
+    Only populated on the faster-whisper backend with
+    ``word_timestamps=True``. The OpenVINO backend doesn't expose
+    word-level DTW (optimum-intel doesn't surface the cross-attention
+    matrices), so cues from that backend have ``words=None``."""
+    start: float
+    end: float
+    text: str
+    probability: float
+
+
+@dataclass
 class Cue:
     id: int
     start: float
     end: float
     text: str
+    # Word-level timestamps from Whisper's cross-attention DTW (when
+    # the backend supports it). Stays None on the OpenVINO path and
+    # on transcript-cache hits from pre-0.8.0 entries.
+    words: list[Word] | None = None
+    # Mean log-probability across the cue's tokens, as reported by
+    # the decoder. Used by the confidence-gated re-transcription
+    # pass to identify weak regions worth re-decoding with aggressive
+    # params. Lower (more negative) = less confident. -1.0 is the
+    # OpenAI Whisper-paper threshold for "this region needs another
+    # look". None on backends that don't expose it.
+    avg_logprob: float | None = None
 
 
 @dataclass
@@ -68,23 +101,37 @@ def transcribe(
     *,
     progress: Callable[[float], None] = _noop_progress,
     check_cancel: Callable[[], None] = _noop_cancel,
+    aggressive: bool = False,
 ) -> TranscriptionResult:
-    """`progress` reports fractional completion in [0,1] within transcription
-    (the outer pipeline maps it onto its own 0-100 budget). `check_cancel`
-    raises JobCanceled if the user has clicked cancel — backends call it
-    between segments / chunks so cancel takes effect within seconds, not
-    minutes."""
+    """``progress`` reports fractional completion in [0,1] within
+    transcription (the outer pipeline maps it onto its own 0-100
+    budget). ``check_cancel`` raises JobCanceled if the user has
+    clicked cancel — backends call it between segments / chunks so
+    cancel takes effect within seconds, not minutes.
+
+    ``aggressive=True`` (only meaningful on the cpu/faster-whisper
+    backend) enables the confidence-gated re-pass mode: larger beam,
+    n-gram-repeat suppression, tighter log-prob threshold. Used by
+    ``stt_refine.refine_weak_buckets`` to re-decode weak regions.
+    The OpenVINO backend ignores the flag (its decode path doesn't
+    expose those knobs — optimum-intel wraps the model differently)."""
     from app.config import settings
     backend = settings.whisper_backend.lower()
     if backend == "openvino":
         from app.pipeline.stt_openvino import transcribe as run
+        # OpenVINO ignores ``aggressive`` — its decode path doesn't
+        # expose the relevant knobs.
+        return run(audio_path, language_hint=language_hint,
+                   progress=progress, check_cancel=check_cancel)
     elif backend == "cpu":
         from app.pipeline.stt_faster_whisper import transcribe as run
+        return run(audio_path, language_hint=language_hint,
+                   progress=progress, check_cancel=check_cancel,
+                   aggressive=aggressive)
     else:
         raise ValueError(
             f"Unknown BABEL_WHISPER_BACKEND={settings.whisper_backend!r} (expected 'cpu' or 'openvino')"
         )
-    return run(audio_path, language_hint=language_hint, progress=progress, check_cancel=check_cancel)
 
 
 def release() -> None:
