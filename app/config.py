@@ -43,12 +43,26 @@ class _EnvSettings(BaseSettings):
     # dialogue?" Inception / Dunkirk / sci-fi action: yes, big win.
     # Dialog-driven dramas with sparse score: marginal win.
     vocal_isolation_enabled: bool = False
-    # Demucs model identifier. ``htdemucs`` is the default 4-stem
-    # model (drums/bass/other/vocals) — best general quality.
+    # Demucs model identifier. Default ``htdemucs_ft`` is a single
+    # fine-tuned 4-stem model (~330 MB resident). The plain
+    # ``htdemucs`` is a BagOfModels of FOUR htdemucs_ft instances —
+    # marginally better separation for music production but ~4× the
+    # RAM (~1.5 GB resident), enough to OOM-kill on a 6 GB cgroup
+    # before apply_model() even starts. For our use case (feeding
+    # Whisper, not remixing) htdemucs_ft is the right default.
     # ``mdx_extra_q`` is the quantized 2-stem (vocals/no_vocals)
-    # variant — faster + lighter, slightly worse fidelity. Both
-    # download to ``HF_HOME`` on first run (~80-160 MB each).
-    vocal_isolation_model: str = "htdemucs"
+    # variant — even lighter (~800 MB resident), slightly worse
+    # fidelity, useful as a fallback. All download to ``HF_HOME`` on
+    # first run.
+    vocal_isolation_model: str = "htdemucs_ft"
+    # How many seconds of audio to load into RAM per Demucs pass.
+    # ``apply_model`` peak memory scales with chunk_seconds × channels
+    # × samplerate × 4 stems × 4 bytes. At 300 s (5 min) on a 44.1 kHz
+    # stereo input: ~423 MB per chunk + ~330 MB model = ~750 MB peak,
+    # safely under the 6 GB cgroup. Without chunking, a 2.5 h film
+    # would need ~12.5 GB just for the output tensor. Lower this if
+    # you ever see "process restarted" during isolating-vocals.
+    vocal_isolation_chunk_seconds: int = 300
 
     # STT
     whisper_backend: str = "cpu"

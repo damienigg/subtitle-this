@@ -208,22 +208,43 @@ def _ffmpeg_extract_for_demucs(media_path: str, track_index: int) -> Path:
     return out
 
 
-def _apply_separation(model, raw_wav: Path):
-    """Run the model against the extracted WAV and return
-    ``(vocals_tensor, samplerate, audio_seconds_processed)``.
+def _separate_streaming(
+    model,
+    raw_wav: Path,
+    out_path: Path,
+    *,
+    chunk_seconds: int = 300,
+    progress_within_phase: Callable[[float], None] = _noop_progress,
+    check_cancel: Callable[[], None] = _noop_cancel,
+) -> float:
+    """Run Demucs in chunks, mix the vocals stem to mono + resample to
+    16 kHz on the fly, write the result incrementally to ``out_path``.
+    Returns the total audio seconds processed.
 
-    Replaces what ``demucs.api.Separator.separate_audio_file`` would
-    have done. Loads the WAV with soundfile, resamples if needed,
-    pads to stereo if needed, calls ``apply_model``, and returns just
-    the 'vocals' stem.
+    Why streaming (added 0.7.29 after Inception OOM): apply_model
+    needs the input tensor AND a (sources × channels × samples) output
+    tensor BOTH resident in RAM. For a 2.5 h film at 44.1 kHz stereo
+    float32 that's 3.13 GB input + 12.5 GB output just for the 4-stem
+    case — far above a 6 GB cgroup budget. Internal ``split=True``
+    only helps the activation buffers, not the I/O tensors. The fix
+    is to chunk the audio ourselves: read N seconds, apply_model,
+    extract vocals, mono-mix + resample, write to disk, free, repeat.
+    Peak per-chunk is ~423 MB on a 5-min chunk + model weights.
+
+    Why we write 16 kHz mono directly here (instead of producing a
+    44.1 k stereo intermediate and resampling in a second pass): the
+    intermediate file for a 2.5 h film would be 3 GB on disk and need
+    another 3 GB tensor on the resample pass. Fused chunking-and-
+    resampling sidesteps both costs.
+
+    The chunk seam artifact at outer-chunk boundaries is small
+    (Demucs's internal ``overlap=0.25`` smooths it). For downstream
+    STT use this is invisible — Whisper resyncs every 30 s window.
 
     Why ``soundfile`` and not ``torchaudio.load``: torchaudio 2.6+
     routes ``load()`` through ``load_with_torchcodec``, which raises
     ``ImportError: TorchCodec is required`` unless the separate
-    ``torchcodec`` package is installed. soundfile is already a
-    dependency (faster-whisper uses it, and we write WAVs with it
-    elsewhere in this file) so it's the cheapest fix that also
-    sidesteps adding another heavy codec dep to the image.
+    ``torchcodec`` package is installed.
 
     Tests monkeypatch this function directly so they don't need to
     fake the demucs submodules — the lifecycle invariants (release
@@ -235,33 +256,6 @@ def _apply_separation(model, raw_wav: Path):
     import soundfile as sf
     from demucs.apply import apply_model
 
-    # Load mix with soundfile. Returns (samples, channels) float32 array
-    # plus the sample rate. always_2d=True keeps the shape consistent
-    # even for mono files (so .T below always works).
-    audio_np, sr = sf.read(str(raw_wav), dtype="float32", always_2d=True)
-    # soundfile is samples-major; torch/Demucs convention is channels-major.
-    mix = torch.from_numpy(np.ascontiguousarray(audio_np.T))
-    if sr != model.samplerate:
-        # torchaudio.transforms.* is pure tensor math (no codec), so this
-        # path doesn't hit the torchcodec issue.
-        mix = torchaudio.transforms.Resample(sr, model.samplerate)(mix)
-        sr = model.samplerate
-    # Demucs htdemucs is trained on stereo. If we somehow got mono,
-    # duplicate the channel so the model's input shape is honoured.
-    if mix.shape[0] == 1 and getattr(model, "audio_channels", 2) == 2:
-        mix = mix.repeat(2, 1)
-
-    # apply_model expects (batch, channels, samples) and returns
-    # (batch, sources, channels, samples). shifts=0, split=True,
-    # overlap=0.25 are Demucs's defaults — keeping them so quality
-    # matches what Separator would have produced.
-    with torch.no_grad():
-        sources = apply_model(
-            model, mix.unsqueeze(0),
-            device="cpu", shifts=0, split=True, overlap=0.25,
-            progress=False,
-        )[0]
-
     sources_list = list(getattr(model, "sources", []))
     if "vocals" not in sources_list:
         raise RuntimeError(
@@ -269,34 +263,80 @@ def _apply_separation(model, raw_wav: Path):
             f"(found: {sources_list})"
         )
     vocals_idx = sources_list.index("vocals")
-    vocals = sources[vocals_idx]
-    audio_seconds = float(mix.shape[-1]) / float(sr)
-    return vocals, sr, audio_seconds
 
+    with sf.SoundFile(str(raw_wav)) as src:
+        sr = src.samplerate
+        total_samples = src.frames
+        chunk_samples = max(1, int(chunk_seconds) * sr)
 
-def _save_vocals_as_whisper_wav(vocals_tensor, src_sr: int, out_path: Path) -> None:
-    """Mix-down stereo vocals to mono, resample to 16 kHz, write as a
-    16-bit PCM WAV at the path Whisper will read. Done via torchaudio
-    so we don't shell out to ffmpeg again — the tensor is already in
-    memory at this point."""
-    import torchaudio
-    import soundfile as sf
+        # Build the resampler once; the same nn.Module instance is
+        # reused on every chunk so the kaiser_window kernel is computed
+        # only once. Pure tensor math, so torchcodec isn't involved.
+        if sr != 16000:
+            resampler = torchaudio.transforms.Resample(
+                orig_freq=sr, new_freq=16000,
+                resampling_method="sinc_interp_kaiser",
+            )
+        else:
+            resampler = None
 
-    # vocals_tensor shape: (channels, samples). Mono-mix by averaging.
-    if vocals_tensor.dim() == 2 and vocals_tensor.shape[0] > 1:
-        mono = vocals_tensor.mean(dim=0, keepdim=True)
-    else:
-        mono = vocals_tensor
-    # Resample 44.1k → 16k using torchaudio's high-quality kaiser_window.
-    if src_sr != 16000:
-        resampler = torchaudio.transforms.Resample(
-            orig_freq=src_sr, new_freq=16000,
-            resampling_method="sinc_interp_kaiser",
-        )
-        mono = resampler(mono)
-    # Squeeze to 1D, scale to int16 range, write with soundfile.
-    samples = mono.squeeze(0).clamp(-1.0, 1.0).numpy()
-    sf.write(str(out_path), samples, 16000, subtype="PCM_16")
+        with sf.SoundFile(
+            str(out_path), "w",
+            samplerate=16000, channels=1, subtype="PCM_16",
+        ) as dst:
+            pos = 0
+            while pos < total_samples:
+                check_cancel()
+                # soundfile reads (samples, channels). always_2d makes
+                # the shape consistent even for mono input.
+                chunk_np = src.read(
+                    chunk_samples, dtype="float32", always_2d=True,
+                )
+                if chunk_np.shape[0] == 0:
+                    break
+
+                # (samples, channels) → (channels, samples) for Demucs.
+                mix = torch.from_numpy(np.ascontiguousarray(chunk_np.T))
+                # Demucs htdemucs is trained on stereo. If the source
+                # is mono, duplicate so the model sees the expected
+                # input shape.
+                if mix.shape[0] == 1 and getattr(model, "audio_channels", 2) == 2:
+                    mix = mix.repeat(2, 1)
+
+                # apply_model expects (batch, channels, samples) and
+                # returns (batch, sources, channels, samples).
+                # shifts=0, split=True, overlap=0.25 are Demucs defaults.
+                # ``split=True`` chunks INTERNALLY at segment-seconds
+                # for activation memory; the I/O tensors are sized by
+                # our outer chunk_samples.
+                with torch.no_grad():
+                    sources = apply_model(
+                        model, mix.unsqueeze(0),
+                        device="cpu", shifts=0, split=True, overlap=0.25,
+                        progress=False,
+                    )[0]
+                vocals = sources[vocals_idx]
+
+                # Mono mix (mean of L+R) then 16 k resample. Both are
+                # cheap relative to apply_model.
+                if vocals.dim() == 2 and vocals.shape[0] > 1:
+                    mono = vocals.mean(dim=0, keepdim=True)
+                else:
+                    mono = vocals
+                if resampler is not None:
+                    mono = resampler(mono)
+                samples = mono.squeeze(0).clamp(-1.0, 1.0).numpy()
+                dst.write(samples)
+
+                pos += chunk_np.shape[0]
+                progress_within_phase(min(1.0, pos / max(1, total_samples)))
+
+                # Drop refs + force gc so the next chunk's allocations
+                # don't pile on top of this one.
+                del mix, sources, vocals, mono, samples, chunk_np
+                gc.collect()
+
+        return float(total_samples) / float(sr)
 
 
 @contextmanager
@@ -342,10 +382,22 @@ def isolate_vocals(
         model = _load_model(model_name)
         progress(0.2)
 
-        vocals, sr, audio_seconds_processed = _apply_separation(model, raw_wav)
-        progress(0.8)
+        # Stream-process the audio in chunks. The within-phase callback
+        # advances 0.0 → 1.0 as chunks complete; we map that span into
+        # the (0.2, 0.95) section of the outer phase so the user sees
+        # smooth progress through what's typically the longest single
+        # part of the run.
+        def _within(within: float) -> None:
+            # Clamp defensively in case a fake test impl reports >1.
+            within = max(0.0, min(1.0, within))
+            progress(0.2 + 0.75 * within)
 
-        _save_vocals_as_whisper_wav(vocals, sr, vocals_wav)
+        audio_seconds_processed = _separate_streaming(
+            model, raw_wav, vocals_wav,
+            chunk_seconds=int(settings.vocal_isolation_chunk_seconds),
+            progress_within_phase=_within,
+            check_cancel=check_cancel,
+        )
         progress(0.95)
 
         # ── Critical: release Demucs RAM BEFORE yielding ──────────────

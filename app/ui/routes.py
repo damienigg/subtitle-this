@@ -317,16 +317,32 @@ _FIELD_META: list[dict[str, Any]] = [
      "label": "Demucs model", "type": "select",
      "show_if": {"field": "vocal_isolation_enabled", "equals": "true"},
      "options": [
+         {"value": "htdemucs_ft",
+          "label": "htdemucs_ft · [~330 MB resident · 4-stem · recommended] single fine-tuned model, lightest 4-stem option"},
          {"value": "htdemucs",
-          "label": "htdemucs · [~80 MB · 4-stem · best quality · slowest] separates vocals + drums + bass + other"},
+          "label": "htdemucs · [~1.5 GB resident · 4-stem · best quality] BagOfModels of 4 — marginally better but heavy on RAM"},
          {"value": "mdx_extra_q",
-          "label": "mdx_extra_q · [quantized · 2-stem · faster · lighter] vocals vs no_vocals"},
+          "label": "mdx_extra_q · [~800 MB resident · 2-stem · faster] quantized vocals/no_vocals — useful fallback"},
      ],
-     "help": "htdemucs is the default 4-stem model — best general "
-             "quality, separates drums/bass/other/vocals. "
-             "mdx_extra_q is a quantized 2-stem variant that's about "
-             "30% faster with slightly lower fidelity on the vocals "
-             "stem. Either downloads to HF_HOME on first run."},
+     "help": "htdemucs_ft is the recommended default — a single fine-"
+             "tuned model with the same per-model quality as htdemucs "
+             "but ~4× less RAM. Plain htdemucs is a BagOfModels of "
+             "FOUR htdemucs_ft instances; the bag averages them for "
+             "marginally better separation but blows RAM budgets on a "
+             "6 GB cgroup. mdx_extra_q is the lightest option (2-stem, "
+             "quantized) — slightly worse vocal fidelity but useful "
+             "when you're hitting OOM kills even on htdemucs_ft."},
+    {"key": "vocal_isolation_chunk_seconds", "section": "Speech-to-Text",
+     "label": "Demucs chunk size (seconds)", "type": "number",
+     "show_if": {"field": "vocal_isolation_enabled", "equals": "true"},
+     "help": "How many seconds of audio to load and process per "
+             "Demucs pass. apply_model peak memory scales linearly "
+             "with this. 300 (5 min) is the default — caps peak at "
+             "~750 MB on top of the model weights, leaving plenty of "
+             "room under a 6 GB cgroup. Drop to 120 (2 min) if you're "
+             "still seeing 'process restarted' during isolating-"
+             "vocals. Going below 60 starts hurting separation quality "
+             "near chunk boundaries."},
 
     # ── Speech-to-Text ────────────────────────────────────────────────────────
     {"key": "whisper_backend", "section": "Speech-to-Text",

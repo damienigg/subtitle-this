@@ -2,10 +2,10 @@
 
 The real Demucs package is NOT installed in the test environment —
 these tests monkeypatch the module's own seams (``_load_model``,
-``_apply_separation``, plus the ffmpeg + WAV save helpers) so the
-phase's wiring (load → run → release → yield → cleanup) is verified
-without paying the 1-2 GB / 5-min real cost AND without faking the
-demucs submodules in ``sys.modules``.
+``_separate_streaming``, plus the ffmpeg helper) so the phase's
+wiring (load → stream-separate → release → yield → cleanup) is
+verified without paying the 1-2 GB / 5-min real cost AND without
+faking the demucs submodules in ``sys.modules``.
 
 What's pinned here:
 
@@ -18,12 +18,15 @@ What's pinned here:
 - ``is_available()`` returns (False, error) when demucs isn't importable.
 - Metrics — took_seconds + audio_seconds_processed — are populated.
 
-Historical note: pre-0.7.27 the module routed through
-``demucs.api.Separator``, which doesn't exist in the published PyPI
-4.0.1 wheel (the api submodule was only added in master post-release).
-The tests faked it via sys.modules injection. After the switch to
-``demucs.pretrained`` + ``demucs.apply`` we test at the module-seam
-level instead — equally strict on lifecycle, cleaner setup.
+Historical notes:
+- pre-0.7.27 the module routed through ``demucs.api.Separator``,
+  which doesn't exist in the published PyPI 4.0.1 wheel. Tests faked
+  it via sys.modules injection.
+- 0.7.27 switched to ``demucs.pretrained`` + ``demucs.apply`` and
+  tests started monkeypatching ``_apply_separation`` / ``_save_*``.
+- 0.7.29 fused both seams into ``_separate_streaming`` to fix the
+  OOM-kill when apply_model tried to keep a full 2.5 h film in RAM.
+  Tests now monkeypatch that one streaming function.
 """
 import sys
 from pathlib import Path
@@ -103,19 +106,32 @@ def fake_load_model(monkeypatch):
 
 
 @pytest.fixture
-def fake_apply(monkeypatch):
-    """Stub the actual separation call so no torch / demucs runs.
-    Returns the FakeTensor / sr / audio_seconds shape the real function
-    would have returned, and records which model was passed."""
-    calls: list[tuple[_FakeModel, Path]] = []
+def fake_separate(monkeypatch):
+    """Stub the streaming separation+save step so no torch/demucs/
+    soundfile work happens. Writes a marker to the out_path the real
+    function would have written to, fires the progress callback at
+    [0.0, 0.5, 1.0] to mimic chunked progress, and returns a fake
+    audio-seconds value the metrics test can assert on.
 
-    def fake_separation(model, raw_wav: Path):
-        calls.append((model, raw_wav))
-        # Match the fake 5s clip dimensions so audio_seconds_processed
-        # comes out at ~5.0 (the metrics assertion).
-        return _FakeTensor(channels=2, samples=44100 * 5), 44100, 5.0
+    Returns the (model, raw_wav, out_path) tuple of each call so tests
+    can verify the model + paths threaded through correctly."""
+    calls: list[tuple[_FakeModel, Path, Path]] = []
 
-    monkeypatch.setattr(vi, "_apply_separation", fake_separation)
+    def fake_streaming(model, raw_wav: Path, out_path: Path,
+                       *, chunk_seconds, progress_within_phase, check_cancel):
+        calls.append((model, raw_wav, out_path))
+        # Fire a few progress ticks so the progress-callback test sees
+        # within-phase advancement, not just the outer 0.0/1.0 anchors.
+        progress_within_phase(0.0)
+        check_cancel()
+        progress_within_phase(0.5)
+        check_cancel()
+        out_path.write_bytes(b"FAKE_VOCALS_WAV")
+        progress_within_phase(1.0)
+        # Audio-seconds the metrics test assertion expects.
+        return 5.0
+
+    monkeypatch.setattr(vi, "_separate_streaming", fake_streaming)
     return calls
 
 
@@ -133,22 +149,6 @@ def fake_ffmpeg(monkeypatch, tmp_path):
         return out
 
     monkeypatch.setattr(vi, "_ffmpeg_extract_for_demucs", fake_extract)
-
-
-@pytest.fixture
-def fake_save(monkeypatch):
-    """Stub the torchaudio save step — the fake tensor doesn't survive
-    a real resample/write. Replaces _save_vocals_as_whisper_wav with
-    a marker write so we can verify the function was reached AND that
-    the output path is the one passed to it."""
-    written: list[Path] = []
-
-    def fake_writer(_vocals, _sr, out_path):
-        out_path.write_bytes(b"FAKE_VOCALS_WAV")
-        written.append(out_path)
-
-    monkeypatch.setattr(vi, "_save_vocals_as_whisper_wav", fake_writer)
-    return written
 
 
 @pytest.fixture
@@ -187,24 +187,29 @@ def test_is_available_returns_false_when_demucs_missing(monkeypatch):
 
 
 def test_isolate_vocals_yields_wav_path_present_during_block(
-    fake_load_model, fake_apply, fake_ffmpeg, fake_save, cache_dir
+    fake_load_model, fake_separate, fake_ffmpeg, cache_dir
 ):
     """The vocals WAV file exists while we're inside the with-block —
     so STT (which would open it via soundfile) can read it."""
     with vi.isolate_vocals("/m/film.mkv", 0) as result:
         assert result.wav_path.is_file()
         assert result.wav_path.read_bytes() == b"FAKE_VOCALS_WAV"
-        assert result.model == "htdemucs"
-        # _apply_separation got called with the loaded model and the
-        # ffmpeg-extracted WAV.
-        assert len(fake_apply) == 1
-        passed_model, passed_wav = fake_apply[0]
+        # Default model is whatever settings.vocal_isolation_model holds
+        # (htdemucs_ft since 0.7.29). The test asserts the result carries
+        # SOME model name, not the specific default — that's a settings
+        # concern, not a phase-wiring concern.
+        assert result.model
+        # _separate_streaming got called with the loaded model and the
+        # ffmpeg-extracted WAV plus the prepared output path.
+        assert len(fake_separate) == 1
+        passed_model, passed_raw, passed_out = fake_separate[0]
         assert isinstance(passed_model, _FakeModel)
-        assert passed_wav.exists() or passed_wav.name.endswith(".wav")
+        assert passed_raw.name.endswith(".wav")
+        assert passed_out == result.wav_path
 
 
 def test_isolate_vocals_releases_model_before_yield(
-    fake_load_model, fake_apply, fake_ffmpeg, fake_save, cache_dir
+    fake_load_model, fake_separate, fake_ffmpeg, cache_dir
 ):
     """The lifecycle invariant: by the time the caller is INSIDE the
     yielded with-block, the cached Demucs model is already None.
@@ -218,7 +223,7 @@ def test_isolate_vocals_releases_model_before_yield(
 
 
 def test_isolate_vocals_cleans_up_files_on_exit(
-    fake_load_model, fake_apply, fake_ffmpeg, fake_save, cache_dir
+    fake_load_model, fake_separate, fake_ffmpeg, cache_dir
 ):
     """Both the source WAV and the vocals WAV are removed when the
     context exits — no temp turds left in cache_dir/tmp."""
@@ -230,7 +235,7 @@ def test_isolate_vocals_cleans_up_files_on_exit(
 
 
 def test_isolate_vocals_cleans_up_on_exception(
-    fake_load_model, fake_apply, fake_ffmpeg, fake_save, cache_dir
+    fake_load_model, fake_separate, fake_ffmpeg, cache_dir
 ):
     """If the caller raises inside the with-block (e.g. STT crashed),
     the finally clause still releases the model and unlinks the
@@ -246,7 +251,7 @@ def test_isolate_vocals_cleans_up_on_exception(
 
 
 def test_isolate_vocals_progress_callback_fires(
-    fake_load_model, fake_apply, fake_ffmpeg, fake_save, cache_dir
+    fake_load_model, fake_separate, fake_ffmpeg, cache_dir
 ):
     """The progress callback receives fractional updates [0.0, 1.0] —
     used by the outer processor to drive the dashboard progress bar."""
@@ -261,7 +266,7 @@ def test_isolate_vocals_progress_callback_fires(
 
 
 def test_isolate_vocals_cancel_before_apply_aborts_cleanly(
-    fake_load_model, fake_apply, fake_ffmpeg, fake_save, cache_dir
+    fake_load_model, fake_separate, fake_ffmpeg, cache_dir
 ):
     """If the user cancels BEFORE Demucs runs, check_cancel raises and
     the finally clause releases / cleans up. The vocals WAV path
@@ -281,7 +286,7 @@ def test_isolate_vocals_cancel_before_apply_aborts_cleanly(
 
 
 def test_isolate_vocals_metrics_populated(
-    fake_load_model, fake_apply, fake_ffmpeg, fake_save, cache_dir
+    fake_load_model, fake_separate, fake_ffmpeg, cache_dir
 ):
     """took_seconds and audio_seconds_processed are non-zero — the
     stats page reads these to show 'isolation ran for N s, processed
@@ -293,7 +298,7 @@ def test_isolate_vocals_metrics_populated(
 
 
 def test_isolate_vocals_raises_when_demucs_not_installed(
-    monkeypatch, fake_ffmpeg, fake_save, cache_dir
+    monkeypatch, fake_ffmpeg, cache_dir
 ):
     """A clear ImportError surfaces at job-start time if the user
     toggles the feature on without installing demucs. Avoids a silent
@@ -312,20 +317,21 @@ def test_isolate_vocals_raises_when_demucs_not_installed(
 
 
 def test_isolate_vocals_rejects_model_without_vocals_stem(
-    fake_load_model, fake_ffmpeg, fake_save, cache_dir, monkeypatch
+    fake_load_model, fake_ffmpeg, cache_dir, monkeypatch
 ):
     """If the user picks a Demucs model that doesn't emit a 'vocals'
     stem (would be a config mistake), raise rather than silently
-    falling back to a wrong stem. Verified by having _apply_separation
-    itself raise — same shape of failure as the real code path where
-    the check lives."""
+    falling back to a wrong stem. Verified by having
+    _separate_streaming itself raise — same shape of failure as the
+    real code path where the check lives."""
 
-    def no_vocals(_model, _raw_wav):
+    def no_vocals(_model, _raw_wav, _out_path, *,
+                  chunk_seconds, progress_within_phase, check_cancel):
         raise RuntimeError(
             "Demucs model produced no 'vocals' stem (found: ['drums', 'bass'])"
         )
 
-    monkeypatch.setattr(vi, "_apply_separation", no_vocals)
+    monkeypatch.setattr(vi, "_separate_streaming", no_vocals)
 
     with pytest.raises(RuntimeError, match="no 'vocals' stem"):
         with vi.isolate_vocals("/m/film.mkv", 0):

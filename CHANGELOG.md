@@ -7,6 +7,56 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.29] — 2026-05-15
+
+### Fixed
+
+- **Vocal isolation no longer OOM-kills the container on long
+  films.** The 0.7.27 / 0.7.28 implementation called Demucs's
+  ``apply_model`` on the full audio tensor in one shot. For a 2.5 h
+  film at 44.1 kHz stereo float32 that meant ~3.13 GB input + 12.5 GB
+  output (4 stems × ch × samples × 4 bytes) resident simultaneously
+  — far above the 6 GB cgroup typical TrueNAS deployments use. On
+  Inception the kernel killed the container at progress 1 % (just
+  after model load), surfaced as ``process restarted at X before job
+  finished (likely OOM-kill or container restart)`` in the Jobs
+  table.
+  
+  Fix in ``app/pipeline/vocal_isolation.py``: new
+  ``_separate_streaming`` function processes the audio in
+  ``vocal_isolation_chunk_seconds``-sized chunks (default 300 s = 5
+  min). Per chunk: read with soundfile, ``apply_model``, extract
+  vocals, mono-mix + 16 kHz resample on the fly, write incrementally
+  to the final WAV, free the chunk's tensors, ``gc.collect``. Peak
+  RAM caps at ~750 MB per chunk regardless of film length. New
+  setting ``vocal_isolation_chunk_seconds`` in Settings UI for
+  per-deployment tuning if 5 min is still too aggressive on a
+  smaller cgroup.
+
+### Changed
+
+- **Default Demucs model is now ``htdemucs_ft`` (was ``htdemucs``).**
+  The plain ``htdemucs`` identifier resolves to a BagOfModels of FOUR
+  fine-tuned sub-models — best separation quality for music
+  production but ~1.5 GB of weights resident, which was the second
+  half of the OOM-kill cause above (Demucs had already loaded ~1.5 GB
+  before apply_model even started). ``htdemucs_ft`` is one of the
+  same sub-models on its own, ~330 MB resident, with effectively
+  identical per-cue quality for our use case (feeding Whisper, not
+  remixing music). The Settings UI now shows three options with
+  their actual resident-RAM costs: ``htdemucs_ft`` (recommended),
+  ``htdemucs`` (bag — for hosts with RAM headroom), and ``mdx_extra_q``
+  (lightest fallback, 2-stem only).
+
+### Tests
+
+- ``tests/test_vocal_isolation.py`` updated to monkeypatch the new
+  ``_separate_streaming`` seam (it replaces both ``_apply_separation``
+  and ``_save_vocals_as_whisper_wav`` from 0.7.28). Lifecycle
+  invariants (release-before-yield, cleanup on success + exception,
+  cancel-before-apply, idempotent release) still pinned. 12 tests
+  pass.
+
 ## [0.7.28] — 2026-05-15
 
 ### Fixed
