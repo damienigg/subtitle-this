@@ -40,6 +40,12 @@ on:
         required: false
         default: "24"
 
+env:
+  # Opt actions/delete-package-versions (and any other JS action this
+  # workflow uses) into Node 24 ahead of the 2026-06-02 forced cutover.
+  # See publish.yml's matching env block for the rationale.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   prune:
     runs-on: ubuntu-latest

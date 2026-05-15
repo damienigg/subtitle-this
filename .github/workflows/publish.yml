@@ -17,6 +17,18 @@ on:
   workflow_dispatch:
 
 env:
+  # Opt every JS action in this workflow into Node 24 ahead of the
+  # forced cutover on 2026-06-02. GitHub started warning about Node 20
+  # deprecation on 2025-09-19; actions/delete-package-versions@v5
+  # (and most others we use) haven't shipped a fresh release tagged
+  # for Node 24 yet, so this env knob is the official opt-in path
+  # documented at github.blog/changelog/2025-09-19-deprecation-of-
+  # node-20-on-github-actions-runners. Setting it now means we'd
+  # surface any Node 24 incompatibility weeks before it becomes the
+  # default (where it'd fail silently for users) — and gives us a
+  # rollback escape hatch via ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION
+  # if upstream ships a broken Node 24 path.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/subtitle-this
   # GHCR retention. Buildx publishes a multi-platform OCI image index plus
