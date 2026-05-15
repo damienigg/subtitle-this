@@ -1,6 +1,6 @@
 [project]
 name = "subtitle-this"
-version = "0.7.26"
+version = "0.7.27"
 description = "Speech-to-text + LLM translation service for Emby, Jellyfin, and Plex"
 requires-python = ">=3.12"
 dependencies = [

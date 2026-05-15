@@ -21,10 +21,26 @@ Isolating the vocals stem before STT closes most of that gap. The
 silence between phrases in the isolated track is *real* silence, so VAD
 becomes nearly redundant (it still runs, but rejects almost nothing).
 
+Why we bypass ``demucs.api.Separator``
+======================================
+The PyPI release of ``demucs`` (4.0.1, June 2023) does not ship the
+``demucs.api`` submodule — that wrapper landed in the GitHub master
+branch after the 4.0.1 cut but Facebook never published a follow-up
+release. ``from demucs.api import Separator`` raises ImportError against
+every installable PyPI version.
+
+This module instead calls the lower-level entry points that
+``Separator`` itself wraps:
+- ``demucs.pretrained.get_model(name)`` → loads weights
+- ``demucs.apply.apply_model(model, mix, ...)`` → runs separation
+These are stable and exist in 4.0.1. Behaviour is identical; we just
+own the orchestration ourselves instead of going through the missing
+high-level wrapper.
+
 Phase-level RAM lifecycle
 =========================
 Demucs htdemucs weights load to ~1-2 GB of resident PyTorch state during
-the separate_audio_file() call. Holding that alongside a freshly-loaded
+the apply_model() call. Holding that alongside a freshly-loaded
 Whisper (~1.5 GB) + NLLB (~3 GB) blows past the typical 12 GB cgroup on
 TrueNAS deployments.
 
@@ -80,63 +96,71 @@ def _noop_cancel() -> None: ...
 # Module-level state — lets release_model() find what to free without
 # the caller threading a model handle through. Mirrors the per-backend
 # cache pattern in stt_openvino / stt_faster_whisper.
-_separator = None
+_model = None
 _model_name_cached: str | None = None
 
 
 def is_available() -> tuple[bool, str | None]:
-    """Probe the import without raising. Returns ``(ok, error_message)``.
+    """Probe the imports without raising. Returns ``(ok, error_message)``.
     Used by the Settings UI to render an inline warning if the user
     toggles ``vocal_isolation_enabled`` on an image that doesn't ship
-    the ``demucs`` package."""
+    the ``demucs`` package.
+
+    Probes the two entry points we actually use (``demucs.pretrained``
+    and ``demucs.apply``) rather than ``demucs.api`` — see the module
+    docstring for why."""
     try:
-        import demucs.api  # noqa: F401
+        from demucs.pretrained import get_model  # noqa: F401
+        from demucs.apply import apply_model  # noqa: F401
         return True, None
     except ImportError as e:
         return False, str(e)
 
 
-def _load_separator(model_name: str):
-    """Lazy-load and cache the Demucs separator. Reuses the cached
-    instance when the model_name matches; otherwise releases the old
-    one first so we never hold two model weight tensors simultaneously.
+def _load_model(model_name: str):
+    """Lazy-load and cache the Demucs model. Reuses the cached instance
+    when ``model_name`` matches; otherwise releases the old one first so
+    we never hold two model weight tensors simultaneously.
 
     Raises ImportError with an actionable message when the demucs
     package isn't installed on this image."""
-    global _separator, _model_name_cached
-    if _separator is not None and _model_name_cached == model_name:
-        return _separator
+    global _model, _model_name_cached
+    if _model is not None and _model_name_cached == model_name:
+        return _model
 
     try:
-        from demucs.api import Separator
+        from demucs.pretrained import get_model
     except ImportError as e:
         raise ImportError(
-            "demucs is not installed in this image. Either disable "
-            "vocal_isolation_enabled in Settings, or rebuild the image "
-            "with the vocal-isolation extra "
-            "(`pip install demucs>=4.0` in the Dockerfile)."
+            "demucs is not installed (or installed but broken) in this "
+            "image. Either turn off `vocal_isolation_enabled` in "
+            "Settings, or pull a newer image from GHCR "
+            "(`docker compose pull && docker compose up -d`). The "
+            "vocal-isolation extra has shipped in the GHCR images "
+            "since 0.7.23. Underlying error: " + str(e)
         ) from e
 
-    # Drop any previously cached separator before loading the new one —
+    # Drop any previously cached model before loading the new one —
     # keeps peak memory at one model's worth.
-    if _separator is not None:
+    if _model is not None:
         release_model()
 
     # device="cpu" because we don't bind Demucs to CUDA/iGPU yet. On a
     # 4-core capped TrueNAS deployment this runs ~3-8x realtime — a 2 h
     # film isolates in ~15-30 min. Acceptable as a quality-vs-time
     # trade for users who turn the feature on.
-    #
-    # segment=7.8 is Demucs's default chunk size in seconds. Smaller
-    # = lower peak RAM (each chunk's activation tensor scales linearly)
-    # but more overhead per chunk; we keep the default.
-    _separator = Separator(
-        model=model_name,
-        device="cpu",
-        progress=False,
-    )
+    model = get_model(model_name)
+    model.cpu()
+    try:
+        model.eval()
+    except AttributeError:
+        # BagOfModels (the htdemucs default) doesn't expose .eval() at
+        # the top level — its child Demucs models each handle eval mode
+        # internally. Safe to skip.
+        pass
+    _model = model
     _model_name_cached = model_name
-    return _separator
+    return model
 
 
 def release_model() -> None:
@@ -146,10 +170,10 @@ def release_model() -> None:
     and BEFORE the context manager yields the vocals WAV path — so
     Whisper's load doesn't pile on top of an idle Demucs.
 
-    Safe to call when no separator is cached (no-op then). Cheap to
-    call repeatedly."""
-    global _separator, _model_name_cached
-    _separator = None
+    Safe to call when no model is cached (no-op then). Cheap to call
+    repeatedly."""
+    global _model, _model_name_cached
+    _model = None
     _model_name_cached = None
     gc.collect()
     try_malloc_trim()
@@ -184,12 +208,61 @@ def _ffmpeg_extract_for_demucs(media_path: str, track_index: int) -> Path:
     return out
 
 
+def _apply_separation(model, raw_wav: Path):
+    """Run the model against the extracted WAV and return
+    ``(vocals_tensor, samplerate, audio_seconds_processed)``.
+
+    Replaces what ``demucs.api.Separator.separate_audio_file`` would
+    have done. Loads the WAV with torchaudio, resamples if needed,
+    pads to stereo if needed, calls ``apply_model``, and returns just
+    the 'vocals' stem.
+
+    Tests monkeypatch this function directly so they don't need to
+    fake the demucs submodules — the lifecycle invariants (release
+    before yield, cleanup on exit) live in ``isolate_vocals`` and are
+    independent of how separation is actually performed."""
+    import torch
+    import torchaudio
+    from demucs.apply import apply_model
+
+    # Load mix. torchaudio returns (channels, samples).
+    mix, sr = torchaudio.load(str(raw_wav))
+    if sr != model.samplerate:
+        mix = torchaudio.transforms.Resample(sr, model.samplerate)(mix)
+        sr = model.samplerate
+    # Demucs htdemucs is trained on stereo. If we somehow got mono,
+    # duplicate the channel so the model's input shape is honoured.
+    if mix.shape[0] == 1 and getattr(model, "audio_channels", 2) == 2:
+        mix = mix.repeat(2, 1)
+
+    # apply_model expects (batch, channels, samples) and returns
+    # (batch, sources, channels, samples). shifts=0, split=True,
+    # overlap=0.25 are Demucs's defaults — keeping them so quality
+    # matches what Separator would have produced.
+    with torch.no_grad():
+        sources = apply_model(
+            model, mix.unsqueeze(0),
+            device="cpu", shifts=0, split=True, overlap=0.25,
+            progress=False,
+        )[0]
+
+    sources_list = list(getattr(model, "sources", []))
+    if "vocals" not in sources_list:
+        raise RuntimeError(
+            f"Demucs model produced no 'vocals' stem "
+            f"(found: {sources_list})"
+        )
+    vocals_idx = sources_list.index("vocals")
+    vocals = sources[vocals_idx]
+    audio_seconds = float(mix.shape[-1]) / float(sr)
+    return vocals, sr, audio_seconds
+
+
 def _save_vocals_as_whisper_wav(vocals_tensor, src_sr: int, out_path: Path) -> None:
     """Mix-down stereo vocals to mono, resample to 16 kHz, write as a
     16-bit PCM WAV at the path Whisper will read. Done via torchaudio
     so we don't shell out to ffmpeg again — the tensor is already in
     memory at this point."""
-    import torch
     import torchaudio
     import soundfile as sf
 
@@ -250,35 +323,13 @@ def isolate_vocals(
     audio_seconds_processed = 0.0
     try:
         check_cancel()
-        sep = _load_separator(model_name)
+        model = _load_model(model_name)
         progress(0.2)
 
-        # separate_audio_file returns (origin_tensor, stems_dict).
-        # stems_dict keys: 'drums', 'bass', 'other', 'vocals' for htdemucs.
-        # The "two-stems" variants (mdx_q, mdx_extra_q) return
-        # {'vocals', 'no_vocals'} — we tolerate both by indexing by name.
-        try:
-            origin, stems = sep.separate_audio_file(raw_wav)
-        except Exception as e:
-            _log.error("Demucs separation failed: %s", e, exc_info=True)
-            raise
-
-        if "vocals" not in stems:
-            raise RuntimeError(
-                f"Demucs model {model_name!r} produced no 'vocals' stem "
-                f"(found: {sorted(stems.keys())})"
-            )
-        vocals = stems["vocals"]
+        vocals, sr, audio_seconds_processed = _apply_separation(model, raw_wav)
         progress(0.8)
 
-        # ``origin`` is a tensor (channels, samples) at the model's SR.
-        # samples/SR gives the audio length we actually processed.
-        try:
-            audio_seconds_processed = float(origin.shape[-1]) / float(sep.samplerate)
-        except Exception:
-            audio_seconds_processed = 0.0
-
-        _save_vocals_as_whisper_wav(vocals, sep.samplerate, vocals_wav)
+        _save_vocals_as_whisper_wav(vocals, sr, vocals_wav)
         progress(0.95)
 
         # ── Critical: release Demucs RAM BEFORE yielding ──────────────
@@ -304,7 +355,7 @@ def isolate_vocals(
         if raw_wav is not None:
             raw_wav.unlink(missing_ok=True)
         vocals_wav.unlink(missing_ok=True)
-        # If we abort between _load_separator and the explicit release,
+        # If we abort between _load_model and the explicit release,
         # make sure Demucs RAM doesn't survive the context. Idempotent.
         release_model()
 

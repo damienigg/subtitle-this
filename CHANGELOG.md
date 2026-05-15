@@ -7,6 +7,45 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.27] — 2026-05-15
+
+### Fixed
+
+- **Vocal isolation phase now works against the actual published
+  demucs wheel.** 0.7.23 routed the phase through
+  ``demucs.api.Separator`` — that submodule was added to the
+  facebookresearch/demucs GitHub repo *after* the last PyPI release
+  (4.0.1, June 2023) and Facebook never published a follow-up. Every
+  ``pip install demucs`` resolves to 4.0.1, which ships the package
+  but **not** the ``api`` submodule, so ``import demucs.api`` raised
+  ``ModuleNotFoundError`` on every container that pulled the
+  release-tagged GHCR image. With ``vocal_isolation_enabled=True`` the
+  submit fail-fast (added in 0.7.24) then surfaced a 422 ``demucs is
+  not installed`` immediately on the Library row's "▶ Subtitle now"
+  click. Switched ``app/pipeline/vocal_isolation.py`` to call the
+  lower-level entry points that ``Separator`` itself wraps —
+  ``demucs.pretrained.get_model`` + ``demucs.apply.apply_model`` —
+  which are both stable in 4.0.1. Behaviour and quality are identical;
+  we just own the orchestration instead of going through the missing
+  high-level wrapper. The phase-level RAM lifecycle (load → run →
+  release-before-yield) is unchanged.
+- **Fail-fast + Settings warning messages updated.** Both used to tell
+  the user to ``git pull && docker compose build && docker compose
+  up -d`` to fix a missing ``demucs``, which doesn't apply when
+  running the GHCR image (the supported path). Messages now say
+  ``docker compose pull && docker compose up -d`` for the GHCR case
+  and mention ``demucs.pretrained.get_model`` as the actual import
+  to check when self-building.
+
+### Tests
+
+- ``tests/test_vocal_isolation.py`` rewritten to monkeypatch the
+  module's own seams (``_load_model``, ``_apply_separation``) instead
+  of injecting a fake ``demucs.api`` into ``sys.modules``. Cleaner
+  setup, same lifecycle invariants enforced (release-before-yield,
+  cleanup on success + exception, cancel-before-apply, idempotent
+  release). 12 tests still pass.
+
 ## [0.7.26] — 2026-05-12
 
 ### Changed

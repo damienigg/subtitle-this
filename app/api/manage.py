@@ -154,13 +154,15 @@ def submit_item_job(
         ok, err = vi.is_available()
         if not ok:
             raise ValueError(
-                "Vocal isolation is ON in Settings but the `demucs` "
-                "package isn't installed in this container. Either "
-                "rebuild the image with `demucs>=4.0` (the shipped "
-                "Dockerfiles include it as of 0.7.23 — `git pull && "
-                "docker compose build && docker compose up -d`), or "
-                "turn off `vocal_isolation_enabled` in Settings. "
-                f"Import error: {err}"
+                "Vocal isolation is ON in Settings but `demucs` is not "
+                "usable in this container. If you're on the GHCR image: "
+                "`docker compose pull && docker compose up -d` to grab "
+                "a build that ships the vocal-isolation extra (every "
+                "image from 0.7.27 onward includes it). If you build "
+                "your own image: ensure `demucs>=4.0` is installed and "
+                "that `from demucs.pretrained import get_model` works. "
+                "Otherwise, turn off `vocal_isolation_enabled` in "
+                f"Settings. Import error: {err}"
             )
 
     media = Path(item.path)

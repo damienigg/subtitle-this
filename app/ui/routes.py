@@ -1245,12 +1245,14 @@ def _field_warnings() -> dict[str, str]:
         ok, err = vi.is_available()
         if not ok:
             warnings["vocal_isolation_enabled"] = (
-                "demucs is NOT installed in this image. Any job "
-                "submitted while this is ON will fail fast at "
-                "queue time. Fix: rebuild the image with "
-                "`git pull && docker compose build && "
-                "docker compose up -d` (the shipped Dockerfiles "
-                "include demucs as of 0.7.23), or turn this OFF."
+                "demucs is NOT usable in this image. Any job submitted "
+                "while this is ON will fail fast at queue time. Fix: "
+                "if you run the GHCR image, `docker compose pull && "
+                "docker compose up -d` (every image from 0.7.27 onward "
+                "exposes a working vocal-isolation path). If you build "
+                "your own image, ensure `demucs>=4.0` is installed and "
+                "that `from demucs.pretrained import get_model` works. "
+                "Otherwise, turn this OFF."
             )
     return warnings
 
