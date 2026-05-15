@@ -1,0 +1,72 @@
+name: Prune GHCR (manual one-shot)
+
+# Manual cleanup of accumulated GHCR versions. The auto-prune that
+# runs after each release (see publish.yml's prune-old-versions job)
+# only keeps things tidy *going forward* — it doesn't catch up on the
+# backlog from before we fixed the double-build (see 7b0a43b). This
+# workflow exists to do that one-time deep-clean safely, and to be
+# re-runnable later if accumulation ever creeps up again.
+#
+# WHY THIS IS A SEPARATE FILE:
+# - publish.yml's prune is gated on the same trigger as the build
+#   (tag push). It runs every release, with `min-versions-to-keep: 12`
+#   sized for the steady state. We don't want to bump that number on
+#   every release just to handle a one-time backlog.
+# - workflow_dispatch lets us trigger this on demand without doing a
+#   build, and accept a parameter for how aggressive to be.
+#
+# SAFETY NOTES — read before increasing aggressiveness:
+# - Buildx multi-platform images produce THREE GHCR "versions" per
+#   build per flavor: the OCI index, the linux/amd64 sub-manifest,
+#   and the attestation manifest. The moving `:cpu`/`:openvino` tag
+#   points at the index; the index references the sub-manifest by
+#   digest. If we delete the sub-manifest while the index is still
+#   tagged, `docker pull` fails with "manifest unknown".
+# - The action's `min-versions-to-keep` keeps the N most-recent
+#   versions regardless of tags. As long as N is large enough to
+#   cover the currently-tagged indices AND their children, we're safe.
+# - 24 = 4 most-recent builds × 3 versions × 2 flavors. That's a fat
+#   buffer — only set it lower if you've verified there's no risk.
+# - ignore-versions protects release-tagged versions PLUS the bare
+#   moving tags `cpu`/`openvino`. The latter is the fix for a subtle
+#   gap in the old regex (digits-required) that left the moving tags
+#   protected only by recency.
+
+on:
+  workflow_dispatch:
+    inputs:
+      min_versions_to_keep:
+        description: "Keep the N most-recent versions. Default 24 = 4 recent builds × 6 GHCR entries per build. Lower at your own risk."
+        required: false
+        default: "24"
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Delete old container versions
+        id: prune
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: subtitle-this
+          package-type: container
+          min-versions-to-keep: ${{ inputs.min_versions_to_keep }}
+          # Protect from deletion:
+          # - bare moving tags: cpu, openvino (anchored)
+          # - bare semver: v0.7.28 (git tags don't tag containers, but
+          #   the regex is harmless and future-proof)
+          # - release-versioned containers: 0.7.28-cpu, 0.7-openvino, etc.
+          ignore-versions: '^(cpu|openvino)$|^v?\d+\.\d+(\.\d+)?(-(cpu|openvino))?$'
+
+      - name: Summarize
+        if: always()
+        run: |
+          echo "Prune step finished. Deleted IDs (if any) were logged above."
+          echo "Verify the moving tags still resolve:"
+          echo "  docker pull ghcr.io/damienigg/subtitle-this:openvino"
+          echo "  docker pull ghcr.io/damienigg/subtitle-this:cpu"
+          echo "If either fails with 'manifest unknown', the next release"
+          echo "will re-push the moving tag and fix it — no manual recovery"
+          echo "needed beyond cutting a no-op patch release."

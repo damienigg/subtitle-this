@@ -134,8 +134,13 @@ jobs:
           # pruning the platform-specific manifests breaks the indices
           # that point to them.
           min-versions-to-keep: ${{ fromJSON(env.KEEP_LATEST_N_VERSIONS) }}
-          # Protect any release-tagged version (e.g. 1.2.3-cpu, 1.2-openvino)
-          # from deletion — those are pinned references users may pull
-          # against and shouldn't disappear when a new release build
-          # rolls in.
-          ignore-versions: '^v?\d+\.\d+(\.\d+)?(-(cpu|openvino))?$'
+          # Protect from deletion:
+          # - bare moving tags: cpu, openvino. The previous regex
+          #   required digits at the start, so the moving tags were
+          #   only safe via recency (top-12). On any aggressive prune
+          #   they could be wiped. Now anchored explicitly.
+          # - release-versioned containers: 0.7.28-cpu, 0.7-openvino,
+          #   1.2.3-cpu, etc. Pinned references users may pull against.
+          # - bare semver tags: v0.7.28 (defensive; not currently used
+          #   as container tags but harmless to allow).
+          ignore-versions: '^(cpu|openvino)$|^v?\d+\.\d+(\.\d+)?(-(cpu|openvino))?$'
