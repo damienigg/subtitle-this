@@ -156,10 +156,14 @@ def test_save_failure_does_not_destroy_existing_file(tmp_path, monkeypatch):
     path = jobs_store._store_path()
     snapshot_before = path.read_bytes()
 
-    # Simulate a JSON serialization failure mid-save.
+    # Simulate a JSON serialization failure mid-save. As of 0.8.3 the
+    # store routes through app.util.atomic_write, which calls
+    # json.dumps once before the tmp+replace dance — patching
+    # ``json.dumps`` here makes the save fail before any on-disk
+    # mutation, exercising the swallowed-exception path.
     def boom(*a, **kw):
         raise RuntimeError("simulated disk fail")
-    monkeypatch.setattr(jobs_store.json, "dump", boom)
+    monkeypatch.setattr(jobs_store.json, "dumps", boom)
 
     jobs_store.save_jobs([_make_job(id="new", status="running")])
 

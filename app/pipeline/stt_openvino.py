@@ -48,7 +48,7 @@ from app.pipeline.packing import (
     RegionEntry, Window, plan_packed_windows, remap_cue_to_original,
 )
 from app.pipeline.stt import Cue, TranscriptionResult
-from app.pipeline.vad import detect_speech, plan_chunks
+from app.pipeline.vad import detect_speech
 
 
 _log = logging.getLogger("subtitle_this")

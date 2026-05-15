@@ -10,38 +10,57 @@ Auto-generates target-language subtitles for media in your **Emby, Jellyfin, or 
                            ┌──────────────────────────────────────────┐
                            │ subtitle-this (FastAPI, Docker)          │
    user (web UI) ─────────▶│  Web UI (Jinja2 — settings, library,     │
-                           │            jobs)                         │
+                           │            jobs, cache explorer)         │
                            │  Server-agnostic media client            │
    Media server ◀──────────│  ├─ EmbyJellyfinClient (X-Emby-Token)    │
    (Emby / Jellyfin /      │  └─ PlexClient        (X-Plex-Token)     │
     Plex; path resolve,    │  Pipeline: ffprobe + ffmpeg              │
-    metadata refresh)      │     → Whisper (CPU or OpenVINO iGPU)     │
-                           │     → LLM / DeepL / NLLB                 │
-                           │     → WebVTT writer                      │
-   media volume (rw) ◀─────│  (writes Movie.<lang>.<mode>.ai.vtt)     │
+    metadata refresh)      │     → audio prep (FC pan + loudnorm)     │
+                           │     → optional Demucs vocal isolation    │
+                           │     → Whisper (CPU or OpenVINO iGPU)     │
+                           │     → confidence-gated refine pass       │
+                           │     → anti-hallucination filter          │
+                           │     → LLM / DeepL / NLLB translation     │
+                           │     → readability polish + WebVTT writer │
+   media volume (rw) ◀─────│  (writes Movie.<lang>.ai.vtt)            │
                            └──────────────────────────────────────────┘
 ```
 
 **Subtitle creation is exclusively a manual user action through the web UI.** No webhook, no auto-trigger on `ItemAdded`, no path-based curl endpoint, no whole-library "subtitle everything" button. Every subtitle is the result of a deliberate user click on a specific item or a specific batch.
 
-## The default path (no setup beyond Emby)
+## The default path (no setup beyond your media server)
 
 Out of the box, Subtitle This runs in this configuration:
 
 - **Translation**: NLLB-200 — free, local, no API key, no account
-- **Mode**: audio (Whisper transcribes, NLLB translates, no LLM calls)
 - **Whisper backend**: openvino on the openvino-flavored image, cpu otherwise
-- **Output filename**: `Movie.fr.audio.ai.vtt` next to the source media
+- **Audio-only pipeline**: Whisper transcribes, NLLB translates, no LLM calls
+- **Output filename**: `Movie.fr.ai.vtt` next to the source media
 
 This is what you get with zero configuration past the media server URL + API key. NLLB downloads its 1.5 GB model on first translation; subsequent jobs use the cached model and run offline.
 
-You only need to configure anything beyond the media server credentials if you want **better translation quality** (LLM or DeepL — see [Advanced: upgrading from defaults](#advanced-upgrading-from-defaults)) or **scene-aware translation** (scene/cinematic modes — also Advanced).
+You only need to configure anything beyond the media server credentials if you want **better translation quality** (LLM or DeepL — see [Advanced: upgrading from defaults](#advanced-upgrading-from-defaults)).
+
+### Automatic quality improvements (no toggle needed)
+
+Six pipeline features run automatically when conditions are right, with no setting to flip:
+
+| Feature | When it fires |
+| --- | --- |
+| **Center-channel extraction** | 5.1+ sources — ffmpeg `pan=mono\|c0=FC` pulls the dialogue-only front-center channel, skipping the need for Demucs |
+| **EBU R128 loudness normalization** | Always — brings audio to −23 LUFS, Whisper's training-data range |
+| **Anti-hallucination filter** | Always — drops YouTube-tail signature phrases ("Thanks for watching", "Merci d'avoir regardé") + n-gram stuck-loop repetitions |
+| **Confidence-gated re-transcription** | `whisper_backend=cpu` — walks the first-pass output, re-decodes weak 10-min buckets with aggressive params, capped at 20 % audio budget |
+| **Word-level timestamps** | `whisper_backend=cpu` — DTW alignment gives per-word timing accuracy |
+| **Orphan-word line breaks** | Always — VTT writer avoids ending a line on "of", "the", "de", "la", and similar function words |
+
+The Settings page shows which of these are currently active for your configuration in an "Active automatic improvements" banner at the top.
 
 ## What you do as a user
 
 1. Bring up the container (see [Quick start](#quick-start) below).
 2. Open `http://<host>:8765/`.
-3. **First run only**: the onboarding wizard walks you through 3 steps — pick your server type (Emby / Jellyfin / Plex), paste URL + API key (X-Plex-Token for Plex), choose your default subtitle language, and you're done. Power users can skip the wizard via the link in its header and go straight to the full Settings page.
+3. **First run only**: the onboarding wizard walks you through 3 steps — pick your server type (Emby / Jellyfin / Plex), paste URL + API key (X-Plex-Token for Plex), choose your default subtitle language + translation provider, and you're done. Power users can skip the wizard via the link in its header and go straight to the full Settings page.
 4. Library page → browse your server's items. Click *Subtitle this* on a row, or tick checkboxes on multiple rows and hit *Subtitle selected* (selection persists across pages).
 5. Watch the dashboard — jobs auto-refresh every 3 seconds, complete with a Quality score per run.
 
@@ -104,19 +123,7 @@ Two flows, both on the Library page:
 2. Tick the checkbox on each row you want subtitled. Selection persists across pagination AND page reloads (stored in `localStorage` under `subtitleThis.batchSelection`).
 3. Click *Subtitle selected* in the sticky toolbar above the table.
 
-After a job finishes the result is cached, keyed by file fingerprint + target lang + provider + mode + STT model + translation/vision LLM model ids. The cache also survives mtime bumps, file renames, and our own metadata write-back step via a content-fingerprint fallback.
-
-## Quality tiers (modes)
-
-The mode controls how much visual context the translator gets. The tier is encoded in the output filename — `Movie.fr.audio.ai.vtt` vs `Movie.fr.scene.ai.vtt` vs `Movie.fr.cinematic.ai.vtt` — so multiple tiers can coexist for the same media without overwriting each other.
-
-| Mode | What it does | Cost | Time |
-| --- | --- | --- | --- |
-| `audio` | Whisper transcript → text translator. Speech only. | $ | Whisper-bound only |
-| `scene` | Adds an LLM-vision scene bible (one description per shot) for pronoun/gender disambiguation. | $$ | + scene detection (5–15 min) + ~20 vision calls |
-| `cinematic` | Everything `scene` does **plus** one keyframe per cue attached to translation calls. The translator literally sees what's on screen for each line. | $$$ | + per-cue frame extraction + many more API calls |
-
-**Default is `audio`.** scene and cinematic require translation provider = `llm` with a vision-capable model — see [Advanced: upgrading from defaults](#advanced-upgrading-from-defaults).
+After a job finishes the result is cached, keyed by file fingerprint + target lang + provider + STT model + translation LLM model id (when provider = llm) + VAD-enabled flag (OpenVINO only). The cache also survives mtime bumps, file renames, and our own metadata write-back step via a content-fingerprint fallback.
 
 ## Quality observability
 
@@ -124,8 +131,11 @@ Every finished run produces a JSON stats record persisted in
 `<cache_dir>/stats/<cache_key>.json`. The same data is rendered on
 the **Cache** tab in the web UI, with a per-row 📊 button that opens
 the full breakdown — duration histogram, per-10-min coverage buckets,
-VAD speech ratio + region distribution, region-packing pad-drop /
-snap-recovery counts, Whisper hallucination counter, translation
+audio-prep routing (FC pan vs downmix, loudnorm), vocal-isolation
+metrics (when run), VAD speech ratio + region distribution, region-
+packing pad-drop / snap-recovery counts, Whisper degenerate-timestamp
+drops + refine-pass effect (buckets evaluated / weak / refined),
+anti-hallucination splits, polish merge/extend counts, translation
 char-ratio / empty / duplicate counts, plus a heuristic 0-100
 **Quality Score** with a per-factor table that explains which
 pathology cost which points.
@@ -218,21 +228,15 @@ Everything below is **optional**. Skip if NLLB + audio + your media server alrea
 
 ### Better translation quality: switch provider
 
-Three providers, picked from Settings → Defaults → *Translation provider*:
+Three providers, picked from Settings → Translation → *Translation provider*:
 
 | Provider | Quality | Cost | Where it runs |
 | --- | --- | --- | --- |
 | `nllb` (default) | Fair-to-good. ~30 well-supported languages. | Free, offline | Local (OpenVINO when available, CPU torch fallback otherwise) |
 | `deepl` | Excellent for EU/Asian pairs. Text-only, no cross-cue context. | Free tier 500k chars/mo, paid above | Cloud (DeepL API) |
-| `llm` | Best — uses whichever LLM you configure. Idioms, nuance, cross-cue context, vision-aware in scene/cinematic. | Pay-per-token (cloud) or free (local LLM) | Whatever you point it at |
+| `llm` | Best — uses whichever LLM you configure. Idioms, nuance, cross-cue context. | Pay-per-token (cloud) or free (local LLM) | Whatever you point it at |
 
 Switching to LLM unhides the *Translation model* section in Settings.
-
-### Scene-aware translation: switch mode
-
-Mode `scene` improves pronoun and gendered-agreement decisions by feeding the translator a per-shot scene bible (built from keyframes via your Vision LLM). Mode `cinematic` additionally attaches a frame to each translation call.
-
-Both require provider = `llm`. Switching mode to scene/cinematic in Defaults unhides the *Vision model* and *Scene & Cinematic* sections in Settings.
 
 ### LLM configuration recipes
 
@@ -248,7 +252,22 @@ Once you switch the Translation provider to LLM, the *Translation model* section
 
 **Local servers (Ollama, LM Studio, LocalAI) don't authenticate by default — leave the API key blank.** The OpenAI SDK requires a non-empty key, so Subtitle This substitutes a placeholder transparently.
 
-For scene/cinematic, configure the Vision model section similarly. A common pattern: cloud LLM for translation + local Ollama running `qwen2.5-vl:72b` for vision (vision is the slot that benefits most from a strong specialized model).
+### Vocal isolation (Demucs)
+
+For score-heavy films where dialogue is buried under music (Inception,
+Dunkirk, Tenet), turn on Settings → Speech-to-Text → *Vocal isolation*:
+
+| Mode | Peak RAM | Recommended for |
+| --- | --- | --- |
+| `off` (default) | n/a | Dialog-driven dramas, 5.1+ sources (center-channel extraction does the job for free) |
+| `chunked` | ~1 GB | Any film, any host — safe under a 6 GB cgroup |
+| `full` | scales with length × num_stems | Hosts with ≥ 12 GB free RAM; marginal quality bump over chunked |
+
+The Demucs model identifier (`htdemucs` light, `htdemucs_ft` heavy) is
+hidden from the UI — set `BABEL_VOCAL_ISOLATION_MODEL` to override the
+`htdemucs` default. Demucs is an opt-in extra; install via
+`pip install subtitle-this[vocal-isolation]` or use the shipped Docker
+images, both of which include it.
 
 ### STT backend choice
 
@@ -270,12 +289,10 @@ The "Verify SSL certificate" toggle stays on. This is the recommended path over 
 
 ### Resource safety — keeping a long film from OOMing your host
 
-A 2 h+ film at cinematic mode used to peak somewhere around 5–8 GB resident
-(audio buffered in RAM + 1500 pre-extracted JPEGs + three resident ML models
-+ ffmpeg's video decoder + base64 inflation per LLM call), with no cgroup
-fence — that's enough to push a TrueNAS host into kernel-OOM territory if
-ZFS ARC and other apps are competing. Three layers of mitigation now ship
-in the box:
+A 2 h+ film with Whisper-medium + NLLB-1.3B + vocal-isolation FULL can
+peak around 5–8 GB resident with no cgroup fence — enough to push a
+TrueNAS host into kernel-OOM territory if ZFS ARC and other apps are
+competing. Three layers of mitigation ship in the box:
 
 1. **Container-level cgroup limits** (`docker-compose.yml`): `mem_limit: 6g`,
    `memswap_limit: 6g` (no swap escape — container OOMs alone), `cpus: "4.0"`,
@@ -288,14 +305,16 @@ in the box:
    - **Audio segmentation** (`stt_audio_segment_seconds`, default 600 s)
      reads the wav in 10-minute chunks instead of one 500 MB buffer. Peak
      audio RAM stays ~75 MB regardless of film length.
-   - **Cinematic frame cap** (`cinematic_max_cues_with_frames`, default
-     800) bounds how many cues get a per-cue frame. Excess cues still
-     translate, just text-only. Set to 0 to disable per-cue frames
-     entirely.
-   - **Lazy frame extraction**: cinematic mode no longer pre-extracts one
-     JPEG per cue across the whole film. The translator now extracts a
-     batch's worth at a time — peak RAM per LLM call is
-     `cinematic_batch_size` frames, not `len(cues)`.
+   - **Vocal isolation chunking** (`vocal_isolation_mode=chunked`,
+     `vocal_isolation_chunk_seconds`, default 300 s) caps Demucs peak
+     RAM at ~1 GB regardless of film length. FULL mode trades RAM for
+     marginally cleaner seams and is opt-in.
+   - **Confidence-gated re-pass budget** — the refine phase that
+     re-decodes weak buckets is capped at 20 % of audio total, so a
+     pathological first pass can't blow the wall-clock budget.
+   - **Whisper model release** between STT and translation — the
+     processor evicts Whisper weights before NLLB / LLM loads so the
+     two ML models don't sit resident simultaneously.
    - **Job timeout** (`job_timeout_seconds`, default 5400 = 90 min) kills
      a wedged job at any pipeline checkpoint, releasing the queue lock.
      Set to 0 to disable. A timeout shows up as `failed` with `timeout: …`
@@ -344,46 +363,44 @@ All configurable from the Settings UI; these env vars only matter for declarativ
 | `BABEL_MEDIA_SERVER_VERIFY_SSL` | `true` | Disable for Plex via LAN IP or self-signed certs |
 | `BABEL_WHISPER_BACKEND` | `cpu` | `cpu` / `openvino` (the openvino image sets this to `openvino`) |
 | `BABEL_WHISPER_MODEL` | `small` | `tiny` / `base` / `small` / `medium` / `large-v3` / `large-v3-turbo` |
+| `BABEL_WHISPER_COMPUTE_TYPE` | `int8` | `int8` / `int16` / `float16` / `float32` — cpu backend only |
 | `BABEL_OPENVINO_DEVICE` | `AUTO` | `AUTO` / `GPU` / `CPU` (UI doesn't expose this; AUTO is right) |
+| `BABEL_VAD_ENABLED` | `true` | Silero VAD pre-filter (openvino backend only) |
+| `BABEL_VOCAL_ISOLATION_MODE` | `off` | `off` / `chunked` / `full` — Demucs vocal isolation phase |
+| `BABEL_VOCAL_ISOLATION_CHUNK_SECONDS` | `300` | Chunk length when mode = `chunked` |
+| `BABEL_VOCAL_ISOLATION_MODEL` | `htdemucs` | Demucs model id — UI-hidden power-user knob |
 | `BABEL_DEFAULT_TRANSLATION_PROVIDER` | `nllb` | `nllb` / `deepl` / `llm` |
 | `BABEL_DEFAULT_TARGET_LANG` | `fr` | ISO 639-1 |
-| `BABEL_DEFAULT_MODE` | `audio` | `audio` / `scene` / `cinematic` |
 | `BABEL_DEFAULT_SOURCE_LANG_PRIORITY` | `["en","*"]` | UI-hidden niche knob |
 | `BABEL_NLLB_MODEL` | `facebook/nllb-200-distilled-600M` | NLLB variant |
+| `BABEL_NLLB_BATCH_SIZE` | `4` | Cues per NLLB generate() call |
+| `BABEL_NLLB_LOAD_IN_8BIT` | `true` | int8 NLLB weights (OpenVINO path) — halves resident RAM |
 | `BABEL_TRANSLATION_LLM_TYPE` | `anthropic` | `anthropic` / `openai_compat` |
 | `BABEL_TRANSLATION_LLM_MODEL` | `claude-opus-4-7` | Translator model id |
 | `BABEL_TRANSLATION_LLM_ENDPOINT` | `https://api.openai.com/v1` | Endpoint when type=openai_compat |
 | `BABEL_TRANSLATION_LLM_API_KEY` | (unset) | |
-| `BABEL_TRANSLATION_LLM_SUPPORTS_VISION` | `true` | Required for cinematic mode |
-| `BABEL_VISION_LLM_TYPE` | `anthropic` | `anthropic` / `openai_compat` |
-| `BABEL_VISION_LLM_MODEL` | `claude-opus-4-7` | Scene-describer model |
-| `BABEL_VISION_LLM_ENDPOINT` | `https://api.openai.com/v1` | |
-| `BABEL_VISION_LLM_API_KEY` | (unset) | |
-| `BABEL_VISION_LLM_ENABLED` | `true` | Master switch for scene/cinematic |
 | `BABEL_DEEPL_API_KEY` | (unset) | Free-tier keys end in `:fx` (auto-detected) |
-| `BABEL_SCENE_DETECTION_THRESHOLD` | `0.4` | ffmpeg threshold (0–1, lower = more scenes) |
-| `BABEL_SCENE_MIN_LENGTH_SECONDS` | `1.5` | Skip shorter shots |
-| `BABEL_SCENE_MAX_SCENES` | `500` | Hard cap |
-| `BABEL_SCENE_KEYFRAME_POSITION` | `midpoint` | `start` / `midpoint` / `end` |
-| `BABEL_SCENE_FRAME_MAX_SIZE` | `1024` | Long-edge px sent to vision LLM |
-| `BABEL_SCENE_BIBLE_BATCH_SIZE` | `10` | Scenes per vision-LLM call |
-| `BABEL_CINEMATIC_FRAME_MAX_SIZE` | `768` | Long-edge px for per-cue frames |
-| `BABEL_CINEMATIC_BATCH_SIZE` | `10` | Cues per LLM call in cinematic mode |
-| `BABEL_CINEMATIC_FRAME_ACCURATE_SEEK` | `false` | Slower but frame-accurate seek for per-cue frames |
-| `BABEL_TRANSLATION_BATCH_SIZE` | `30` | Cues per LLM call in text-only mode |
-| `BABEL_NLLB_BATCH_SIZE` | `16` | Cues per NLLB generate() call |
 | `BABEL_DEEPL_BATCH_SIZE` | `50` | Cues per DeepL request (capped at 50 by the API) |
+| `BABEL_TRANSLATION_BATCH_SIZE` | `30` | Cues per LLM call |
 | `BABEL_DEFAULT_SKIP_IF_TARGET_AUDIO_EXISTS` | `true` | Skip when target-lang audio already in file |
 | `BABEL_WRITE_DETECTED_LANGUAGE_TO_FILE` | `true` | MKV-only language tag write-back |
 | `BABEL_MAX_LINE_CHARS` | `42` | Subtitle line wrap |
 | `BABEL_MAX_LINES_PER_CUE` | `2` | Max display lines per cue |
+| `BABEL_POLISH_ENABLED` | `true` | Readability polish — extend short cues, merge fragments |
+| `BABEL_MIN_CUE_DURATION_SECONDS` | `1.2` | Min display duration after polish |
+| `BABEL_MIN_SECONDS_PER_CHAR` | `0.045` | Reading-speed floor (≈ 22 chars/sec) |
+| `BABEL_MERGE_ADJACENT_CUES` | `true` | Collapse adjacent fragments that visually read as one cue |
+| `BABEL_MAX_GAP_TO_MERGE_SECONDS` | `0.3` | Max silence between merge candidates |
+| `BABEL_MAX_MERGED_CUE_DURATION_SECONDS` | `7.0` | Hard cap on a merged cue's on-screen duration |
+| `BABEL_CUE_SEPARATION_SECONDS` | `0.125` | Min gap between cues after polish (≈ 3 frames @ 24 fps) |
 | `BABEL_CACHE_DIR` | `/cache` | Cache directory |
 | `BABEL_JOB_TIMEOUT_SECONDS` | `5400` | Wall-clock cap per job; `0` disables |
 | `BABEL_STT_AUDIO_SEGMENT_SECONDS` | `600` | OpenVINO STT audio-segment size (RAM cap knob) |
 | `BABEL_STT_SEGMENT_OVERLAP_SECONDS` | `30` | Forward overlap on segment reads so straddling regions stay intact |
 | `BABEL_STT_REGION_PACKING` | `true` | Pack short speech regions into shared 30 s decoder windows (perf) |
-| `BABEL_CINEMATIC_MAX_CUES_WITH_FRAMES` | `800` | Hard cap on cues that get a per-cue frame; `0` disables cinematic frames |
+| `BABEL_STT_MAX_REGIONS_PER_WINDOW` | `4` | Density cap for region packing |
 | `BABEL_AUTH_CREDENTIALS` | (unset) | `user:password` for HTTP Basic auth; unset = no auth |
+| `BABEL_UPDATE_COMMAND` | (unset) | Shell command for the dashboard's "Update now" button; unset hides it |
 
 ## Tests
 
@@ -392,13 +409,15 @@ pip install -e .[dev]
 pytest
 ```
 
-255 tests covering pure-logic (language normalization, VTT formatting, track selection, scene mapping, settings store with migrations + atomic writes + corrupt-file recovery, batching, cache key invalidation, two-level cache fingerprint, Emby/Jellyfin payload parsing, Plex API translation, LLM translation provider edge cases including lazy cinematic-frame plumbing, UI form coercion, job deadline enforcement) plus FastAPI smoke tests for every route and the auth + same-origin middleware. Heavy externals (ffmpeg, Whisper, LLM/server APIs) are stubbed — the suite runs in ~5s.
+500 tests covering pure-logic (language normalization, VTT formatting + orphan-word breaks, track selection, settings store with migrations + atomic writes + corrupt-file recovery, batching, cache key invalidation, two-level cache fingerprint, transcript-cache rehydration, Emby/Jellyfin payload parsing, Plex API translation, LLM translation provider edge cases, anti-hallucination filter + safety bailout, confidence-gated refine pass, polish merge/extend, audio-prep filter routing, pipeline-metrics serialization, UI form coercion + show-if rules, job deadline enforcement, atomic-write + JSON-quarantine helpers) plus FastAPI smoke tests for every route and the auth + same-origin middleware. Heavy externals (ffmpeg, Whisper, Demucs, LLM/server APIs) are stubbed — the suite runs in ~10 s.
 
 ## Layout
 
 ```
 subtitle-this/
-├── .github/workflows/publish.yml   GHCR multi-flavor image publish + retention
+├── .github/workflows/
+│   ├── publish.yml                 GHCR multi-flavor image publish + retention
+│   └── prune-ghcr.yml              Manual GHCR cleanup workflow
 ├── .env.example
 ├── docker-compose.yml
 ├── Dockerfile                      CPU image (faster-whisper)
@@ -407,14 +426,22 @@ subtitle-this/
 ├── README.md
 ├── CHANGELOG.md
 └── app/
-    ├── main.py                     FastAPI entry
+    ├── main.py                     FastAPI entry + lifespan
     ├── auth.py                     Optional HTTP Basic + same-origin CSRF middleware
     ├── config.py                   Layered settings + migrations + atomic persist
-    ├── cache.py                    Two-level fingerprint transcript cache
+    ├── cache.py                    Two-level VTT cache (quick fp + content fp)
+    ├── cache_explorer.py           Cache enumeration for the UI
+    ├── transcript_cache.py         Whisper-output cache (skips STT on translation retry)
     ├── jobs.py                     In-memory job queue + per-job wall-clock timeout
+    ├── jobs_store.py               Persisted jobs queue (survives restart)
+    ├── pipeline_metrics.py         Per-run telemetry dataclasses + aggregators
     ├── processor.py                Pipeline orchestrator
+    ├── quality.py                  Heuristic 0-100 Quality Score from pipeline metrics
+    ├── stats.py                    VTT-derived stats + .stats.json sidecar writer
+    ├── updates.py                  In-app update banner + GitHub release check
+    ├── util.py                     atomic_write + JSON-quarantine helpers
     ├── api/
-    │   ├── manage.py               Server-driven endpoints
+    │   ├── manage.py               Server-driven endpoints (jobs, library, cache)
     │   └── settings_api.py         GET/PATCH /api/settings
     ├── server/
     │   ├── base.py                 MediaServerClient ABC + neutral dataclasses
@@ -423,24 +450,32 @@ subtitle-this/
     ├── ui/
     │   └── routes.py               HTML routes + _FIELD_META + _SECTION_SHOW_IF
     ├── templates/
-    │   ├── base.html
+    │   ├── base.html               Shared layout + CSS
+    │   ├── cache_explorer.html
+    │   ├── cache_stats.html        Per-entry quality-stats page
     │   ├── dashboard.html
+    │   ├── job_error.html
+    │   ├── _jobs_table.html        HTMX-polled jobs partial
     │   ├── library.html
+    │   ├── onboarding.html         First-run 3-step wizard
     │   └── settings.html
     └── pipeline/
-        ├── tracks.py
-        ├── audio.py
+        ├── tracks.py               ffprobe-based audio-track selection
+        ├── audio.py                ffmpeg audio extraction (FC pan + loudnorm)
+        ├── vocal_isolation.py      Demucs vocal-isolation phase
         ├── lang.py                 Language code normalization + dropdown options
         ├── lang_detect.py          faster-whisper-tiny pre-pass for untagged tracks
         ├── track_metadata.py       MKV-only language tag write-back
-        ├── stt.py
-        ├── stt_faster_whisper.py
-        ├── stt_openvino.py
-        ├── packing.py                  Speech-region packer (multi-region 30s windows)
-        ├── scenes.py
-        ├── frames.py
-        ├── scene_bible.py
-        ├── vtt.py
+        ├── vad.py                  Silero VAD wrapper
+        ├── packing.py              Speech-region packer (multi-region 30 s windows)
+        ├── stt.py                  Whisper-backend dispatcher
+        ├── stt_faster_whisper.py   CPU backend (faster-whisper)
+        ├── stt_openvino.py         Intel iGPU backend (OpenVINO IR)
+        ├── stt_refine.py           0.8.0 confidence-gated re-transcription
+        ├── anti_hallucination.py   YouTube-tail + n-gram repetition filter
+        ├── polish.py               Readability polish (merge + extend)
+        ├── vtt.py                  WebVTT writer + orphan-word line breaks
+        ├── openvino_introspect.py  GPU-vs-CPU device selection log
         ├── llm/
         │   ├── base.py
         │   ├── anthropic.py

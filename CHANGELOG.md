@@ -7,6 +7,107 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.8.3] — 2026-05-15
+
+Code-review pass. Three parallel audit agents (dead-code, duplication,
+performance) swept the ~11.5 k LOC of app code; findings synthesized
+into targeted cleanups. No behaviour change for end users — pure
+internal hygiene + a full documentation refresh.
+
+### Added
+
+- **`app/util.py`** with two shared helpers extracted from patterns
+  duplicated 4–6× across the codebase:
+  - `atomic_write(path, content)` — write via `<path>.tmp` then
+    `os.replace`. Used by every persistence layer (settings.json,
+    jobs queue, transcript cache, stats sidecars, cache payload
+    re-polish). Centralizes the atomicity contract so any future
+    bug gets fixed in one place.
+  - `load_json_with_quarantine(path, log)` — load JSON; on parse
+    failure, rename the file to `<path>.corrupt` so an operator
+    can investigate, log the event, return None. Routed through
+    by `cache.load`; the more exception-tolerant callers
+    (`transcript_cache`, `jobs_store`, `config`) keep their custom
+    handling around the helper for now.
+- **`tests/test_util.py`** — 9 tests pinning the atomicity guarantee
+  (no half-state visible on rename failure), the quarantine policy
+  (original file moved out of the way, log emitted with optional
+  call-site label), and the rename-failure fallback (still returns
+  None, still logs — never raises).
+
+### Changed
+
+- Six call sites migrated to `atomic_write`:
+  `app/cache.py`, `app/jobs_store.py`, `app/transcript_cache.py`,
+  `app/config.py` (both the user-update path AND the migration
+  write-back path), `app/stats.py` (both sidecar writers),
+  `app/api/manage.py` (re-polish endpoint). Net diff: ~25 lines of
+  near-identical boilerplate replaced with a single helper call.
+- `cache.load()` migrated to `load_json_with_quarantine` (its
+  exception coverage matched the helper exactly). Corrupted VTT-
+  cache entries now get quarantined instead of silently treated
+  as a miss — a subtle observability win.
+
+### Fixed (performance)
+
+- **`stats.py: compute_from_vtt`** — the NOTE-header regex was
+  re-compiled on every call. Hoisted to module level as
+  `_NOTE_PROVENANCE_RE`; saves ~50–250 ms on the stats-heavy
+  Cache Explorer page where it's called once per entry.
+- **`cache_explorer.py: _parse_vtt_payload` / `_parse_transcript_payload`** —
+  each function previously called `path.stat()` twice (once for
+  `st_size`, once for `st_mtime`). Combined into a single
+  `st = path.stat()` call. On a `/cache` page enumeration of 100
+  entries, halves the syscall budget at burst polling time.
+
+### Removed
+
+- **Unused imports** flagged by the dead-code agent:
+  - `plan_chunks` in `app/pipeline/stt_openvino.py`
+    (last referenced before the 0.7.x packing rewrite).
+  - `MediaLibrary` in `app/api/manage.py`
+    (no references anywhere outside the import statement).
+- Several `import os` lines that became unused after the
+  `atomic_write` migration (`config.py`, `jobs_store.py`,
+  `transcript_cache.py`).
+
+### Documentation
+
+Substantial refresh — the README had been drifting since the
+0.7.32 scene/cinematic-mode purge:
+
+- **Stale "Quality tiers (modes)" section deleted** — modes were
+  removed in 0.7.32; audio is the only path. The architecture
+  diagram, "default path" copy, and Library-cache-key line all
+  updated to match.
+- **"Active automatic improvements" table** added to the README,
+  listing the six features that run without any toggle (center-
+  channel extraction, loudnorm, anti-hallucination, refine pass,
+  word-level timestamps, orphan-word line breaks).
+- **Vocal isolation section** added (off / chunked / full table)
+  to replace the deleted scene/cinematic content.
+- **Power-user knobs table** fully rewritten:
+  - removed dead env vars: `BABEL_DEFAULT_MODE`,
+    `BABEL_TRANSLATION_LLM_SUPPORTS_VISION`,
+    `BABEL_VISION_LLM_*` (5 vars), `BABEL_SCENE_*` (6 vars),
+    `BABEL_CINEMATIC_*` (4 vars).
+  - added missing current vars: `BABEL_WHISPER_COMPUTE_TYPE`,
+    `BABEL_VAD_ENABLED`, `BABEL_VOCAL_ISOLATION_*` (3 vars),
+    `BABEL_NLLB_LOAD_IN_8BIT`, polish knobs (7 vars),
+    `BABEL_STT_MAX_REGIONS_PER_WINDOW`, `BABEL_UPDATE_COMMAND`.
+  - fixed `BABEL_NLLB_BATCH_SIZE` default (was documented as `16`,
+    actual default since 0.7.x is `4`).
+- **Layout tree** updated to reflect the current `app/` shape —
+  removed references to `scenes.py`, `frames.py`, `scene_bible.py`
+  (purged in 0.7.32), added the modules that landed in 0.7.x–0.8.x
+  (`vocal_isolation.py`, `stt_refine.py`, `anti_hallucination.py`,
+  `polish.py`, `pipeline_metrics.py`, `quality.py`,
+  `transcript_cache.py`, `jobs_store.py`, `cache_explorer.py`,
+  `stats.py`, `updates.py`, `util.py`).
+- **Test count** updated: was `255 tests`, now `500`.
+- **`.env.example` overhaul** — same purge of stale env vars,
+  added vocal-isolation block + in-app-updater block.
+
 ## [0.8.2] — 2026-05-15
 
 Settings UI clarity pass. The growing pile of per-field help blobs

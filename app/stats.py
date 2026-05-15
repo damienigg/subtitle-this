@@ -45,6 +45,28 @@ _TS_RE = re.compile(
 )
 
 
+# NOTE-header regex for the provenance line written by ``app.pipeline.vtt``.
+# Moved to module level (0.8.3) so it's compiled once at import time instead
+# of on every ``compute_from_vtt`` call — that function is hot on the Cache
+# Explorer's stats page (one call per visible entry).
+#
+# Optional groups:
+# - ``mode``: pre-0.7.32 marker, dropped from the NOTE header in 0.7.32 when
+#   only the ``audio`` mode survived. Kept here so we can still parse old
+#   .vtts in the cache.
+# - ``polished``: 0.7.20+ marker for "readability polish was applied". Absent
+#   on pre-0.7.20 entries (in which case the UI renders "unknown").
+_NOTE_PROVENANCE_RE = re.compile(
+    r"NOTE Subtitle This auto-subs "
+    r"\((?P<src>[a-z]{2}) -> (?P<tgt>[a-z]{2}), "
+    r"(?:mode=(?P<mode>[a-z]+), )?"
+    r"whisper=(?P<whisper>[^,]+), "
+    r"provider=(?P<provider>[^,)]+)"
+    r"(?:, polished=(?P<polished>true|false))?"
+    r"\)"
+)
+
+
 def _to_seconds(h: str, m: str, s: str, ms: str) -> float:
     return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
 
@@ -192,26 +214,10 @@ def compute_from_vtt(
 
     # NOTE line: same shape as in the Cache Explorer.
     #
-    # The optional ``mode=`` group is the pre-0.7.32 marker. From
-    # 0.7.32 onward only the audio mode survives and the field was
-    # dropped from the NOTE header — making the group optional keeps
-    # the regex matching both legacy and new entries with a single
-    # pattern.
-    #
-    # The optional ``polished=true`` group at the end is the 0.7.20+
-    # marker — captured for surfacing on the stats page, absent on
-    # pre-0.7.20 entries (in which case ``polished`` stays None and
-    # the UI renders "polish status unknown").
-    note_re = re.compile(
-        r"NOTE Subtitle This auto-subs "
-        r"\((?P<src>[a-z]{2}) -> (?P<tgt>[a-z]{2}), "
-        r"(?:mode=(?P<mode>[a-z]+), )?"
-        r"whisper=(?P<whisper>[^,]+), "
-        r"provider=(?P<provider>[^,)]+)"
-        r"(?:, polished=(?P<polished>true|false))?"
-        r"\)"
-    )
-    m = note_re.search(vtt_text)
+    # NOTE-header parse — regex compiled once at module level (see
+    # ``_NOTE_PROVENANCE_RE`` above). Optional ``mode=`` group catches
+    # pre-0.7.32 entries; optional ``polished=`` is the 0.7.20+ marker.
+    m = _NOTE_PROVENANCE_RE.search(vtt_text)
     if m:
         stats.source_lang = m.group("src")
         stats.target_lang = m.group("tgt")
@@ -308,16 +314,13 @@ def write_sidecar(vtt_path, stats: VttStats) -> None:
     inside cache_dir/stats/ so the user's movie folder stays clean."""
     import json
     import logging
-    import os
     from pathlib import Path
+    from app.util import atomic_write
 
     log = logging.getLogger("subtitle_this")
     target = Path(str(vtt_path) + ".stats.json")
-    tmp = target.with_suffix(target.suffix + ".tmp")
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(to_jsonable(stats), indent=2))
-        os.replace(tmp, target)
+        atomic_write(target, json.dumps(to_jsonable(stats), indent=2))
     except OSError as e:
         log.warning("stats sidecar write failed for %s: %s", target, e)
 
@@ -343,16 +346,12 @@ def write_cache_sidecar(cache_key: str, stats: VttStats) -> None:
     backup, not a correctness dependency."""
     import json
     import logging
-    import os
-    from pathlib import Path
+    from app.util import atomic_write
 
     log = logging.getLogger("subtitle_this")
     target = cache_sidecar_path(cache_key)
-    tmp = target.with_suffix(target.suffix + ".tmp")
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(to_jsonable(stats), indent=2))
-        os.replace(tmp, target)
+        atomic_write(target, json.dumps(to_jsonable(stats), indent=2))
     except OSError as e:
         log.warning("stats sidecar write failed for %s: %s", target, e)
 

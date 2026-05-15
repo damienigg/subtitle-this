@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 import time
 from dataclasses import fields
@@ -102,14 +101,11 @@ def save_jobs(jobs: list["Job"]) -> None:
     persistence is best-effort and a disk-full or permission problem
     must not crash the running pipeline.
     """
+    from app.util import atomic_write
     path = _store_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
         with _lock:
-            with open(tmp, "w") as f:
-                json.dump([_serialize(j) for j in jobs], f)
-            os.replace(tmp, path)
+            atomic_write(path, json.dumps([_serialize(j) for j in jobs]))
     except Exception:
         _log.warning("jobs_store: failed to save %s", path, exc_info=True)
 

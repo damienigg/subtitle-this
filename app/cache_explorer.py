@@ -115,10 +115,13 @@ def _parse_vtt_payload(path: Path) -> VttEntry:
     malformed payloads — a corrupted entry still produces a row with the
     filename so the user can delete it without a backend crash."""
     import json
+    # Single stat() call — the /cache page enumerates 50+ entries and
+    # HTMX polls it; halving the syscalls per file matters at burst.
+    st = path.stat()
     entry = VttEntry(
         cache_key=path.stem,
-        size_bytes=path.stat().st_size,
-        modified_at=path.stat().st_mtime,
+        size_bytes=st.st_size,
+        modified_at=st.st_mtime,
     )
     try:
         data = json.loads(path.read_text())
@@ -287,10 +290,13 @@ _TRANSCRIPT_KEY_RE = re.compile(
 
 def _parse_transcript_payload(path: Path) -> TranscriptEntry:
     import json
+    # Single stat() call (0.8.3) — see ``_parse_vtt_payload`` for the
+    # syscall-budget rationale; same pattern applies here.
+    st = path.stat()
     entry = TranscriptEntry(
         cache_key=path.stem,
-        size_bytes=path.stat().st_size,
-        modified_at=path.stat().st_mtime,
+        size_bytes=st.st_size,
+        modified_at=st.st_mtime,
     )
     m = _TRANSCRIPT_KEY_RE.match(path.stem)
     if m:

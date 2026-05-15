@@ -28,6 +28,7 @@ of distinct content the practical collision rate is vanishingly small.
 """
 import hashlib
 import json
+import logging
 from pathlib import Path
 
 from app.config import settings
@@ -143,16 +144,16 @@ def cache_path(key: str) -> Path:
     return settings.cache_dir / f"{key}.json"
 
 
+_log = logging.getLogger("subtitle_this")
+
+
 def load(key: str) -> dict | None:
-    p = cache_path(key)
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text())
-    except (json.JSONDecodeError, OSError):
-        # Corrupt or unreadable cache file — treat as a miss so we recompute.
-        # The next store() call will overwrite it cleanly.
-        return None
+    """Load a cache payload by key. Returns None on miss OR corruption
+    (corrupt files are quarantined to ``<key>.json.corrupt`` so a future
+    operator can investigate; the next store() call overwrites the
+    original path cleanly)."""
+    from app.util import load_json_with_quarantine
+    return load_json_with_quarantine(cache_path(key), _log, label="cache")
 
 
 def store(key: str, payload: dict) -> None:

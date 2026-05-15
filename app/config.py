@@ -6,7 +6,6 @@ proxies attribute access — values written via the UI override env-bound defaul
 """
 import json
 import logging
-import os
 import threading
 import time
 from pathlib import Path
@@ -482,10 +481,8 @@ class SettingsStore:
         after_serialized = json.dumps(data, sort_keys=True)
         if before_serialized != after_serialized:
             try:
-                self._file.parent.mkdir(parents=True, exist_ok=True)
-                tmp = self._file.with_name(self._file.name + ".tmp")
-                tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
-                os.replace(tmp, self._file)
+                from app.util import atomic_write
+                atomic_write(self._file, json.dumps(data, indent=2, sort_keys=True))
                 if prior_version and prior_version != __version__:
                     _log.info(
                         "settings.json migrated from schema %s → %s",
@@ -513,14 +510,16 @@ class SettingsStore:
 
     def _save_locked(self) -> None:
         """Atomic write — holds self._write_lock so callers don't need to
-        lock around their write. Writes to a sibling .tmp first, then
-        os.replace's into place, so a crash/kill mid-write can never leave
-        a half-written settings.json behind.
+        lock around their write. The underlying ``atomic_write`` helper
+        in ``app/util.py`` writes to a sibling .tmp first, then
+        ``os.replace``s into place, so a crash/kill mid-write can never
+        leave a half-written settings.json behind.
         """
-        self._file.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._file.with_name(self._file.name + ".tmp")
-        tmp.write_text(json.dumps(self._overrides, indent=2, sort_keys=True))
-        os.replace(tmp, self._file)
+        from app.util import atomic_write
+        atomic_write(
+            self._file,
+            json.dumps(self._overrides, indent=2, sort_keys=True),
+        )
 
     # Back-compat alias so existing tests (and any external callers that
     # poke _save()) still work. New code should go through update/reset.

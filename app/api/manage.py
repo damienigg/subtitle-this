@@ -20,7 +20,6 @@ from app.processor import (
 )
 from app.server import (
     MediaItem,
-    MediaLibrary,
     MediaServerClient,
     MediaServerError,
     media_server_client as _build_media_server_client,
@@ -589,10 +588,8 @@ def cache_repolish_vtt(cache_key: str) -> dict:
 
     # Persist the polished VTT back to the cache payload atomically.
     payload["vtt"] = new_vtt
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload))
-    import os as _os
-    _os.replace(tmp, path)
+    from app.util import atomic_write
+    atomic_write(path, json.dumps(payload))
 
     # Best-effort: also overwrite the .vtt next to the media so a
     # media-server reload picks up the polished version. The path is

@@ -51,7 +51,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import asdict
 from pathlib import Path
 
@@ -194,11 +193,10 @@ def store(
     is a retry-resume optimization, not a correctness requirement."""
     if not result.cues:
         return   # don't cache empty transcriptions
+    from app.util import atomic_write
     store_dir = _store_dir()
     try:
-        store_dir.mkdir(parents=True, exist_ok=True)
         path = store_dir / f"{_key(content_fp, whisper_model, whisper_backend, vad_enabled, track_index, vocal_isolation_enabled)}.json"
-        tmp = path.with_suffix(".tmp")
         payload = {
             "detected_language": result.detected_language,
             "cues": [asdict(c) for c in result.cues],
@@ -209,8 +207,6 @@ def store(
         # telemetry the original run captured.
         if result.pipeline_metrics is not None:
             payload["pipeline_metrics"] = asdict(result.pipeline_metrics)
-        with open(tmp, "w") as f:
-            json.dump(payload, f)
-        os.replace(tmp, path)
+        atomic_write(path, json.dumps(payload))
     except Exception:
         _log.warning("transcript_cache: failed to save", exc_info=True)
