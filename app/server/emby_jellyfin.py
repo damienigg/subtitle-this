@@ -9,6 +9,7 @@ Settings for the badge label and a couple of UI hints.
 """
 import httpx
 
+from app.pipeline.lang import normalize as _normalize_lang
 from app.server.base import (
     MediaItem,
     MediaLibrary,
@@ -158,9 +159,18 @@ def _item_from_payload(d: dict) -> MediaItem:
 
 def _stream_from_payload(s: dict) -> MediaStream:
     raw_type = (s.get("Type") or "").lower()
+    # Emby/Jellyfin emit 3-letter ISO 639-2 codes (eng, fre, ita) in
+    # the Language field. The rest of the app expects ISO 639-1
+    # (en, fr, it) and the Plex adapter already normalizes — so do
+    # the same here to keep MediaStream.language uniformly 2-letter
+    # regardless of which server backs the client. Without this, the
+    # Library page rendered 3-letter pills on Emby/Jellyfin items
+    # while every other lang surface (target_lang chip row, embedded-
+    # subs decision, etc.) used 2-letter codes. Codes outside the
+    # known mapping degrade gracefully to None (then to "—" in the UI).
     return MediaStream(
         type=raw_type if raw_type in ("audio", "subtitle", "video") else "other",
-        language=s.get("Language") or None,
+        language=_normalize_lang(s.get("Language")),
         codec=s.get("Codec"),
         title=s.get("Title") or s.get("DisplayTitle"),
         is_default=bool(s.get("IsDefault")),

@@ -7,6 +7,39 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.11.4] — 2026-05-15
+
+UI polish — two unrelated nits caught on the post-0.11.3 dashboard.
+
+### Fixed
+
+- **Library page rendered 3-letter sub-lang pills (`fre`, `ita`, `eng`)
+  on Emby/Jellyfin items.** Plex's adapter already normalized stream
+  languages via `lang.normalize()` but the Emby/Jellyfin adapter
+  passed the raw `Language` field through — Emby returns ISO 639-2.
+  Every other lang surface (target_lang chip row, embedded-subs
+  decision, NOTE header) used 2-letter ISO 639-1, so the table broke
+  the visual contract. The adapter now normalizes too; the `MediaStream.
+  language` contract is uniformly 2-letter regardless of backing
+  server.
+
+### Changed
+
+- **Dashboard grid: Media server narrower, Speech-to-Text wider.**
+  Columns moved from `1fr 1fr 1fr 2fr` to `0.7fr 1.3fr 1fr 2fr`.
+  Media server only ever carries 2 short pills (server type +
+  connected status) and was over-allocated; STT carries up to 3
+  (backend + model + device) where the model name pill could
+  truncate on long variants like `large-v3-turbo`.
+
+### Tests
+
+- New `test_stream_from_payload_normalizes_all_639_2_codes` and
+  `test_stream_from_payload_unknown_lang_degrades_to_none` pin the
+  ISO 639-2 → 639-1 mapping for the 11 codes operators encounter
+  most often and the graceful degradation for unknown codes.
+- 538 passing total (was 536).
+
 ## [0.11.3] — 2026-05-15
 
 ### Fixed

@@ -341,14 +341,17 @@
 
     /* Dashboard stat cards — compact, consistent height, balanced gutters.
        0.11.0+: explicit grid that lets the last card carry more pills.
-       0.11.2+: columns are `1fr 1fr 1fr 2fr` so Pipeline tweaks (the
-       4th card) gets double the room — its 5 pills (embed-subs /
-       vocals / polish / VAD / timeout) fit on one line on a 1280-wide
-       viewport without wrapping. Media server / STT / Translation
-       each carry 2-3 pills and don't need the extra width.
+       0.11.4+: columns are `0.7fr 1.3fr 1fr 2fr` so:
+       - Media server (2 short pills: type + connected) is the narrowest;
+       - Speech-to-Text (3 pills: backend / model / device) gets more
+         room so the model name pill no longer truncates on viewports
+         where the variant has a long string (e.g. `large-v3-turbo`);
+       - Translation stays at 1fr (provider + variant pills);
+       - Pipeline tweaks keeps its 2fr for the 5-pill row.
+       Total = 5fr, same as before — only the proportions shift.
        Breakpoints: collapse to 2-up on tablets, 1-up on phones. */
     section > .grid {
-      grid-template-columns: 1fr 1fr 1fr 2fr;
+      grid-template-columns: 0.7fr 1.3fr 1fr 2fr;
       gap: 0.55rem;
     }
     @media (max-width: 1100px) {

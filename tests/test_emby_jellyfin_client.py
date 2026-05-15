@@ -67,7 +67,37 @@ def test_stream_from_payload_normalizes_type():
     works regardless of casing."""
     s = _stream_from_payload({"Type": "Subtitle", "Language": "fra"})
     assert s.type == "subtitle"
-    assert s.language == "fra"
+    # 0.11.4+: language is also normalized from ISO 639-2 to ISO 639-1
+    # so the rest of the pipeline (UI pills, target_lang chip row,
+    # embedded-subs language matching) sees one consistent shape.
+    assert s.language == "fr"
+
+
+def test_stream_from_payload_normalizes_all_639_2_codes():
+    """0.11.4 regression: Emby/Jellyfin returns 3-letter ISO 639-2
+    codes (fre/eng/ita/ger/...) in the Language field; the Library
+    page used to render those raw as 3-letter pills while every
+    other lang surface used 2-letter codes. Pin the mapping for
+    the codes operators most often encounter."""
+    cases = [
+        ("eng", "en"), ("fre", "fr"), ("fra", "fr"),  # ISO 639-2/B and /T
+        ("ita", "it"), ("ger", "de"), ("deu", "de"),
+        ("spa", "es"), ("jpn", "ja"), ("kor", "ko"),
+        ("chi", "zh"), ("zho", "zh"),
+    ]
+    for raw, expected in cases:
+        s = _stream_from_payload({"Type": "Subtitle", "Language": raw})
+        assert s.language == expected, f"{raw!r} should normalize to {expected!r}"
+
+
+def test_stream_from_payload_unknown_lang_degrades_to_none():
+    """Defensive: a language code outside the known mapping (or the
+    sentinel 'und' Emby uses for unknown) becomes None so the UI
+    renders the row cleanly rather than as a broken pill."""
+    s = _stream_from_payload({"Type": "Subtitle", "Language": "und"})
+    assert s.language is None
+    s2 = _stream_from_payload({"Type": "Subtitle", "Language": "xyz"})
+    assert s2.language is None
 
 
 def test_stream_from_payload_unknown_type_becomes_other():
