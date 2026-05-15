@@ -70,7 +70,6 @@
           <th class="col-name">Name</th>
           <th class="col-type">Type</th>
           <th class="col-sub">Embedded subs</th>
-          <th class="col-path">Path</th>
           <th class="col-action"></th>
           <th class="col-result"></th>
         </tr>
@@ -78,7 +77,10 @@
       <tbody>
         {% for item in items %}
         <tr data-item-id="{{ item.id }}" data-item-name="{{ item.name }}">
-          <td class="col-name" title="{{ item.name }}">{{ item.name }}</td>
+          {# 0.11.2: Path column removed. Disk path moved to the Name
+             cell's title attr so it's still discoverable on hover for
+             an operator debugging a "wrong file picked up" issue. #}
+          <td class="col-name" title="{{ item.path }}">{{ item.name }}</td>
           <td class="col-type">{{ item.type }}</td>
           <td class="col-sub">
             {# 0.11.0+: list every subtitle language already present in
@@ -93,7 +95,6 @@
               <span class="muted small">—</span>
             {% endif %}
           </td>
-          <td class="col-path"><code class="path" title="{{ item.path }}">{{ item.path }}</code></td>
           <td class="col-action">
             <div class="row-actions">
               <button type="button" class="secondary subtitle-btn"

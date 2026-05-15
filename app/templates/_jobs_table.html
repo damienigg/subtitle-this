@@ -92,9 +92,30 @@
               <span class="progress-label muted">—</span>
             {% endif %}
           </td>
-          <td>{{ j.target_lang }}</td>
           <td>
-            {% if j.whisper_model %}
+            {# 0.11.2: render target_lang as a pill so the LANG column
+               matches the visual style of STT / Translation. Multi-
+               lang batches show as separate rows (one per language)
+               each with its own pill — the column header "Lang" stays
+               singular because each row is for exactly one language. #}
+            <span class="status-pill muted">{{ j.target_lang }}</span>
+          </td>
+          <td>
+            {# 0.11.2: when the embedded-subs short-circuit took over,
+               STT never ran — surface that with a "skipped" pill
+               instead of the (misleading) Whisper model name that the
+               job inherits from its config. Detection: read the run-
+               level metric block. ``copy_same_lang`` and
+               ``translate_other_lang`` are the two actions where STT
+               is skipped; the other ``fallback_*`` and
+               ``disabled_by_user`` codes still take the STT path. #}
+            {% set _es_action = (j.pipeline_metrics or {}).get('embedded_subs', {}).get('action') if j.pipeline_metrics else none %}
+            {% if _es_action in ('copy_same_lang', 'translate_other_lang') %}
+              <span class="status-pill muted"
+                    title="STT was skipped — embedded {{ (j.pipeline_metrics or {}).get('embedded_subs', {}).get('chosen_codec', 'subtitle') }} track in {{ (j.pipeline_metrics or {}).get('embedded_subs', {}).get('chosen_lang', '?') }} produced the cues">
+                skipped
+              </span>
+            {% elif j.whisper_model %}
               <span class="status-pill muted">{{ j.whisper_model }}</span>
             {% else %}
               <span class="muted">—</span>

@@ -518,6 +518,103 @@ def test_dashboard_renders_when_running_jobs_exist(client, monkeypatch):
     assert p.status_code == 200
 
 
+def test_jobs_table_embedded_subs_renders_skipped_pill(client, monkeypatch):
+    """0.11.2: when a job took the embedded-subs short-circuit (STT
+    was skipped), the STT column must render a "skipped" pill instead
+    of the (misleading) Whisper model name the job inherited from
+    config. Pin both branches: a copy_same_lang job shows "skipped";
+    a regular STT job shows the model name."""
+    import time as _time
+    from app import jobs as jobs_mod
+
+    skipped_job = jobs_mod.Job(
+        id="s1", item_id="i1", item_name="Embedded-subs run",
+        target_lang="fr", provider="nllb", mode="audio",
+        whisper_model="large-v3-turbo",
+    )
+    skipped_job.status = "succeeded"
+    skipped_job.started_at = _time.time() - 30.0
+    skipped_job.finished_at = _time.time() - 1.0
+    skipped_job.progress_pct = 100.0
+    skipped_job.pipeline_metrics = {
+        "embedded_subs": {
+            "action": "copy_same_lang",
+            "chosen_codec": "subrip",
+            "chosen_lang": "fr",
+            "chosen_track_index": 6,
+        },
+    }
+
+    stt_job = jobs_mod.Job(
+        id="t1", item_id="i2", item_name="Regular STT run",
+        target_lang="fr", provider="nllb", mode="audio",
+        whisper_model="large-v3-turbo",
+    )
+    stt_job.status = "succeeded"
+    stt_job.started_at = _time.time() - 600.0
+    stt_job.finished_at = _time.time() - 60.0
+    stt_job.progress_pct = 100.0
+    # No pipeline_metrics — the partial must not crash on the None
+    # path either.
+
+    monkeypatch.setattr(jobs_mod, "_jobs", {
+        skipped_job.id: skipped_job, stt_job.id: stt_job,
+    })
+
+    p = client.get("/partials/jobs")
+    assert p.status_code == 200
+    body = p.text
+    # The skipped job's row carries a "skipped" pill; the STT job's
+    # row carries the model name. Both must be present.
+    import re
+    # The pill's text "skipped" can have surrounding whitespace from
+    # Jinja's pretty-printing; match anywhere between the pill's
+    # opening tag and its </span>.
+    pill_re = re.compile(r'<span[^>]*status-pill[^>]*>\s*skipped\s*</span>', re.S)
+    assert pill_re.search(body), (
+        "embedded-subs job should render a 'skipped' pill"
+    )
+    assert "large-v3-turbo" in body, (
+        "STT-path job should still render the model name"
+    )
+
+
+def test_library_page_drops_path_column(client, monkeypatch):
+    """0.11.2: the Library table's Path column was removed so the
+    Embedded subs column can fit more language pills. The full disk
+    path moves to the Name cell's title attr (visible on hover) so
+    operators debugging a "wrong file" issue still have access."""
+    from app.config import settings
+    from app.ui import routes as routes_mod
+    from app.server.base import MediaPage, MediaLibrary, MediaItem, MediaStream
+
+    monkeypatch.setattr(settings, "_overrides",
+                        {**settings._overrides,
+                         "media_server_url": "http://stub",
+                         "media_server_api_key": "k"})
+
+    fake_item = MediaItem(
+        id="i1", name="Inception", path="/movies/Inception.mkv", type="Movie",
+        streams=[MediaStream(type="subtitle", language="en")],
+    )
+    class StubClient:
+        def list_libraries(self):
+            return [MediaLibrary(id="1", name="Films", type="movies")]
+        def list_videos(self, **kw):
+            return MediaPage(items=[fake_item], total=1)
+    monkeypatch.setattr(routes_mod, "media_server_client", lambda: StubClient())
+
+    r = client.get("/library")
+    body = r.text
+    assert r.status_code == 200
+    # Column header gone
+    assert ">Path</th>" not in body
+    # No path <td> renders the monospace code block anymore
+    assert 'class="col-path"' not in body
+    # Path still readable from the Name cell's title attr
+    assert 'title="/movies/Inception.mkv"' in body
+
+
 def test_cache_explorer_page_renders(client):
     """GET /cache renders both sections (VTT + Transcript) without raising,
     even with an empty cache dir. Catches Jinja template breakage on the

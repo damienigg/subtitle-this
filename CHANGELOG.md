@@ -7,6 +7,45 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.11.2] — 2026-05-15
+
+UI clarity follow-ups based on first impressions of the multi-lang
++ embedded-subs flow.
+
+### Changed
+
+- **Library: Path column removed.** The full disk path took ~28 % of
+  the row width, which crowded the new chip-row of embedded subtitle
+  languages. Path is now the `title` attribute on the Name cell —
+  still visible on hover for operators debugging a "wrong file"
+  issue, but no longer blocking horizontal space. The Embedded subs
+  column gets the reclaimed room (22 rem fixed width) and wraps its
+  pills cleanly when a file has many sub tracks.
+- **Jobs table: STT column shows "skipped" pill when embedded subs
+  bypassed STT.** Previously the column displayed the configured
+  Whisper model name (e.g. `large-v3-turbo`) regardless of whether
+  the model actually ran. For jobs whose `pipeline_metrics.
+  embedded_subs.action` is `copy_same_lang` or `translate_other_lang`,
+  the STT was skipped — the cell now renders a muted "skipped" pill
+  with a tooltip explaining which embedded track produced the cues.
+- **Jobs table: Lang cell rendered as a status pill.** Matches the
+  visual style of the STT / Translation columns. Multi-language
+  batches still show as one row per language (each Job is per-lang
+  by design); each row's pill carries that row's specific target.
+- **Dashboard: Pipeline tweaks card 2× wider.** Grid switched from
+  `repeat(4, 1fr)` to `1fr 1fr 1fr 2fr` so the 5 pipeline-tweak
+  pills (embed-subs / vocals / polish / VAD / timeout) fit on a
+  single line on a 1280-wide viewport without wrapping. The other
+  three cards each carry 2-3 pills and don't need extra width.
+
+### Tests
+
+- `test_jobs_table_embedded_subs_renders_skipped_pill` — pins the
+  STT cell behaviour across both branches (embedded-subs vs STT).
+- `test_library_page_drops_path_column` — pins the column removal +
+  title-attr fallback on the Name cell.
+- 535 passing total (was 533).
+
 ## [0.11.1] — 2026-05-15
 
 Bug-fix patch. Three issues found on the first end-to-end run of the

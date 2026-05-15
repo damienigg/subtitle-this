@@ -340,12 +340,15 @@
     }
 
     /* Dashboard stat cards — compact, consistent height, balanced gutters.
-       0.11.0+: explicit 4-column grid with a single breakpoint that
-       collapses to 2-up on tablets and 1-up on phones. The pills inside
-       each card use ultra-compact labels so a 4-up layout fits on a
-       typical 1280-wide viewport without horizontal scroll. */
+       0.11.0+: explicit grid that lets the last card carry more pills.
+       0.11.2+: columns are `1fr 1fr 1fr 2fr` so Pipeline tweaks (the
+       4th card) gets double the room — its 5 pills (embed-subs /
+       vocals / polish / VAD / timeout) fit on one line on a 1280-wide
+       viewport without wrapping. Media server / STT / Translation
+       each carry 2-3 pills and don't need the extra width.
+       Breakpoints: collapse to 2-up on tablets, 1-up on phones. */
     section > .grid {
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: 1fr 1fr 1fr 2fr;
       gap: 0.55rem;
     }
     @media (max-width: 1100px) {
@@ -647,20 +650,14 @@
     .library-table th.col-checkbox, .library-table td.col-checkbox { width: 2rem; }
     .library-table th.col-name,     .library-table td.col-name     { width: auto; }
     .library-table th.col-type,     .library-table td.col-type     { width: 5rem; }
-    .library-table th.col-sub,      .library-table td.col-sub      { width: 6rem; text-align: center; }
-    .library-table th.col-path,     .library-table td.col-path     { width: 28%; }
+    /* 0.11.2: Path column dropped — its 28% was reclaimed by col-sub so
+       the embedded-subtitle chip row can wrap nicely instead of being
+       crammed into 6rem. The disk path is still readable as the
+       title= tooltip on the row Name cell (kept on the <td>). */
+    .library-table th.col-sub,      .library-table td.col-sub      { width: 22rem; text-align: left; }
+    .library-table .col-sub .status-pill { margin: 0.1rem 0.1rem 0.1rem 0; }
     .library-table th.col-action,   .library-table td.col-action   { width: 12rem; }
     .library-table th.col-result,   .library-table td.col-result   { width: 10rem; }
-
-    /* Path cells: monospace + ellipsis, full text on hover via title attr. */
-    .library-table .col-path code {
-      display: block;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-size: 0.82em;
-      color: var(--pico-muted-color);
-    }
 
     /* Result pills (queued / queued · skipped / HTTP 4xx) — clamp to the
        column width and wrap if absolutely needed. Long error responses
