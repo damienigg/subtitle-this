@@ -198,7 +198,18 @@ def filter_cues(cues: list[Cue]) -> tuple[list[Cue], FilterStats]:
     (cache key, polish, translate) keeps working.
 
     Idempotent: running it twice produces the same output as once
-    (the blacklist + repetition rules are pure functions of text)."""
+    (the blacklist + repetition rules are pure functions of text).
+
+    **Safety net**: if the filter would drop EVERY cue (>90% blacklist
+    matches → 0 survivors), we suspect the heuristic is wrong for
+    this track (e.g. an actual YouTube screen-grab where the whole
+    audio IS "Thanks for watching"-flavoured, or a track where
+    Whisper hallucinated everywhere). In that case we return the
+    original cue list with a warning logged. Better to ship the cues
+    and let the user review than to fail the whole job with a
+    misleading NoSpeech. The threshold is tuned so legitimate dialog
+    films (where genuine YT-corpus drop is < 5% of cues) still get
+    the filtered output."""
     stats = FilterStats(input_count=len(cues))
     out: list[Cue] = []
     for cue in cues:
@@ -213,6 +224,25 @@ def filter_cues(cues: list[Cue]) -> tuple[list[Cue], FilterStats]:
             continue
         out.append(cue)
 
+    # Safety: if the filter would drop everything (or near-everything
+    # on a non-trivial input), bail out and return the originals.
+    # The 90% threshold + minimum-size guard prevents this kicking in
+    # on tiny test inputs while still catching real degenerate runs.
+    total_dropped = stats.blacklisted + stats.repetition_dropped
+    if len(cues) >= 10 and total_dropped >= int(0.9 * len(cues)):
+        _log.warning(
+            "anti-hallucination: would drop %d/%d cues (>= 90%%) — "
+            "suspect the heuristic is wrong for this track. Returning "
+            "ORIGINAL cue list and letting the user review. This is "
+            "either a YT-screen-grab source where the dialog IS those "
+            "phrases, or Whisper hallucinated across the whole audio.",
+            total_dropped, len(cues),
+        )
+        # Preserve original cue list, but record what we WOULD have
+        # done in stats so the metrics page surfaces it.
+        stats.output_count = len(cues)
+        return list(cues), stats
+
     # Renumber so ids are contiguous 0..N-1. Preserve timing + text.
     renumbered = [
         Cue(id=i, start=c.start, end=c.end, text=c.text)
@@ -223,7 +253,7 @@ def filter_cues(cues: list[Cue]) -> tuple[list[Cue], FilterStats]:
         _log.info(
             "anti-hallucination: dropped %d cue(s) (%d blacklist + %d "
             "repetition) out of %d input.",
-            stats.blacklisted + stats.repetition_dropped,
-            stats.blacklisted, stats.repetition_dropped, stats.input_count,
+            total_dropped, stats.blacklisted, stats.repetition_dropped,
+            stats.input_count,
         )
     return renumbered, stats

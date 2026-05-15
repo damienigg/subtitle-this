@@ -153,6 +153,28 @@ def _build_filter_chain(info: ChannelInfo) -> tuple[list[str], list[str]]:
     return filters, extra_flags
 
 
+def _run_ffmpeg_extract(
+    media_path: str, track_index: int, out_path: Path,
+    filters: list[str], extra_flags: list[str],
+) -> None:
+    """Run ffmpeg with a specific filter chain. Raises
+    ``subprocess.CalledProcessError`` on non-zero exit."""
+    subprocess.run(
+        [
+            "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+            "-i", media_path,
+            "-map", f"0:{track_index}",
+            *extra_flags,
+            "-ar", "16000",
+            "-c:a", "pcm_s16le",
+            "-af", ",".join(filters),
+            str(out_path),
+        ],
+        check=True,
+        timeout=_AUDIO_EXTRACT_TIMEOUT_SECONDS,
+    )
+
+
 @contextmanager
 def extract_audio(media_path: str, track_index: int):
     """Extract a single audio track to a 16 kHz mono WAV temp file
@@ -161,7 +183,14 @@ def extract_audio(media_path: str, track_index: int):
 
     Applies center-channel extraction (5.1+ sources) and EBU R128
     loudness normalization automatically — see the module docstring
-    for the rationale on each."""
+    for the rationale on each.
+
+    **Safety net**: if the optimised filter chain (pan=FC + loudnorm)
+    fails — e.g. ffprobe claims 5.1 but the actual stream has a
+    non-standard layout with no FC channel — we retry with a bare
+    downmix-only command. The user still gets a valid 16 kHz mono
+    WAV, just without the center-channel optimisation. Better than
+    failing the whole job over an edge-case mux."""
     info = probe_channel_layout(media_path, track_index)
     filters, extra_flags = _build_filter_chain(info)
     if info.has_center:
@@ -179,20 +208,31 @@ def extract_audio(media_path: str, track_index: int):
     ) as tmp:
         out_path = Path(tmp.name)
     try:
-        subprocess.run(
-            [
-                "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
-                "-i", media_path,
-                "-map", f"0:{track_index}",
-                *extra_flags,
-                "-ar", "16000",
-                "-c:a", "pcm_s16le",
-                "-af", ",".join(filters),
-                str(out_path),
-            ],
-            check=True,
-            timeout=_AUDIO_EXTRACT_TIMEOUT_SECONDS,
-        )
+        try:
+            _run_ffmpeg_extract(media_path, track_index, out_path, filters, extra_flags)
+        except subprocess.CalledProcessError as e:
+            if info.has_center:
+                # Optimised path failed — almost certainly the
+                # ``pan=mono|c0=FC`` filter rejected the layout. Fall
+                # back to the standard downmix path so the user gets
+                # a job result instead of an error.
+                _log.warning(
+                    "audio prep: optimised filter chain failed (ffmpeg "
+                    "exit %d) — retrying with standard stereo downmix. "
+                    "This usually means the source claims %d channels "
+                    "but has a non-standard layout missing FC.",
+                    e.returncode, info.channels,
+                )
+                fallback_filters = [_LOUDNORM_FILTER]
+                fallback_flags = ["-ac", "1"]
+                _run_ffmpeg_extract(
+                    media_path, track_index, out_path,
+                    fallback_filters, fallback_flags,
+                )
+            else:
+                # Standard path failed and there's no safer fallback
+                # left to try. Bubble the error up.
+                raise
         yield out_path
     finally:
         out_path.unlink(missing_ok=True)

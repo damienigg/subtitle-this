@@ -174,6 +174,83 @@ def test_extract_audio_emits_fc_pan_for_51_source(tmp_path, monkeypatch):
         assert "-c:a" in args and "pcm_s16le" in args
 
 
+def test_extract_audio_falls_back_when_optimised_chain_fails(tmp_path, monkeypatch):
+    """Safety net: ffprobe says 5.1 → we try pan=mono|c0=FC. If ffmpeg
+    rejects it (non-standard layout where FC doesn't exist despite the
+    channel count), we fall back to standard downmix instead of failing
+    the job. The user still gets a valid 16 kHz mono WAV, just without
+    the center-channel optimisation."""
+    import subprocess as sub_mod
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    from app.config import settings as runtime_settings
+    monkeypatch.setattr(
+        runtime_settings, "_overrides",
+        {**runtime_settings._overrides, "cache_dir": cache_dir},
+    )
+
+    captured_calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        if "ffprobe" in args[0]:
+            cp = MagicMock()
+            cp.stdout = json.dumps({"streams": [{"channels": 6, "channel_layout": "5.1"}]})
+            cp.returncode = 0
+            return cp
+        captured_calls.append(list(args))
+        # First ffmpeg call (the FC-pan optimised path) FAILS.
+        # Second call (the fallback) succeeds.
+        af_arg = args[args.index("-af") + 1] if "-af" in args else ""
+        if "pan=mono|c0=FC" in af_arg:
+            raise sub_mod.CalledProcessError(1, args, stderr=b"pan: FC not found")
+        cp = MagicMock()
+        cp.returncode = 0
+        return cp
+
+    monkeypatch.setattr(audio_mod.subprocess, "run", fake_run)
+
+    # The whole thing must succeed despite the first ffmpeg failing.
+    with audio_mod.extract_audio("/m/f.mkv", 1) as wav:
+        pass
+
+    # Exactly two ffmpeg calls were made: optimised (failed) + fallback (succeeded).
+    assert len(captured_calls) == 2
+    first_af = captured_calls[0][captured_calls[0].index("-af") + 1]
+    second_af = captured_calls[1][captured_calls[1].index("-af") + 1]
+    assert "pan=mono|c0=FC" in first_af   # optimised path tried first
+    assert "pan=" not in second_af        # fallback drops the pan filter
+    assert "loudnorm=I=-23" in second_af  # loudnorm still applied on fallback
+    # -ac 1 present on the fallback for mono output (no pan to handle it).
+    assert "-ac" in captured_calls[1]
+
+
+def test_extract_audio_propagates_failure_on_non_center_path(tmp_path, monkeypatch):
+    """When ffprobe reports a non-5.1 source AND ffmpeg fails, there's
+    no safer fallback to try — bubble the error up."""
+    import subprocess as sub_mod
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    from app.config import settings as runtime_settings
+    monkeypatch.setattr(
+        runtime_settings, "_overrides",
+        {**runtime_settings._overrides, "cache_dir": cache_dir},
+    )
+
+    def fake_run(args, **kwargs):
+        if "ffprobe" in args[0]:
+            cp = MagicMock()
+            cp.stdout = json.dumps({"streams": [{"channels": 2, "channel_layout": "stereo"}]})
+            cp.returncode = 0
+            return cp
+        raise sub_mod.CalledProcessError(1, args, stderr=b"some other error")
+
+    monkeypatch.setattr(audio_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(sub_mod.CalledProcessError):
+        with audio_mod.extract_audio("/m/f.mkv", 1):
+            pass
+
+
 def test_extract_audio_uses_standard_downmix_for_stereo(tmp_path, monkeypatch):
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()

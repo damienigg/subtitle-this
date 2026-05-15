@@ -169,3 +169,73 @@ def test_filter_empty_input():
     out, stats = filter_cues([])
     assert out == []
     assert stats == FilterStats(input_count=0, blacklisted=0, repetition_dropped=0, output_count=0)
+
+
+# ── Safety net: bail out if the filter would drop everything ────────────────
+
+
+def test_filter_returns_originals_when_would_drop_90_percent():
+    """A degenerate run (Whisper hallucinates the whole audio, OR the
+    source genuinely IS a YT-screen-grab with those phrases as real
+    dialog) shouldn't lose ALL cues — better to ship them and let the
+    user review. Threshold: 90% drop on a list ≥ 10 cues."""
+    cues = [
+        _cue(0, "Real dialogue here."),  # the only non-blacklisted
+        _cue(1, "Thanks for watching."),
+        _cue(2, "Subscribe"),
+        _cue(3, "Like and subscribe"),
+        _cue(4, "Please like and subscribe"),
+        _cue(5, "Thank you for watching"),
+        _cue(6, "Thanks for watching this video"),
+        _cue(7, "See you next time"),
+        _cue(8, "See you later"),
+        _cue(9, "See you guys later"),
+        _cue(10, "Subscribe to my channel"),
+    ]
+    # 10/11 = 90.9% would be dropped → safety net kicks in.
+    out, stats = filter_cues(cues)
+    # Originals returned unchanged, with their original ids.
+    assert [c.id for c in out] == [c.id for c in cues]
+    assert [c.text for c in out] == [c.text for c in cues]
+    # Stats still record what the filter WOULD have done (input_count
+    # + blacklisted), so the operator can see the heuristic fired.
+    assert stats.blacklisted == 10
+    assert stats.output_count == 11   # what we returned
+
+
+def test_filter_below_safety_threshold_still_filters_normally():
+    """A 50% drop is high but not degenerate — that's the actual
+    contract (drop the hallucinations, keep the dialog). Safety net
+    only triggers at ≥90%."""
+    cues = [
+        _cue(0, "First real line."),
+        _cue(1, "Thanks for watching."),
+        _cue(2, "Second real line."),
+        _cue(3, "Subscribe"),
+        _cue(4, "Third real line."),
+        _cue(5, "Subscribe to my channel"),
+        _cue(6, "Fourth real line."),
+        _cue(7, "See you next time"),
+        _cue(8, "Fifth real line."),
+        _cue(9, "Like and subscribe"),
+    ]
+    out, stats = filter_cues(cues)
+    # 5 hallucinations dropped, 5 reals kept.
+    assert len(out) == 5
+    assert stats.blacklisted == 5
+    assert all("Subscribe" not in c.text for c in out)
+
+
+def test_filter_safety_does_not_kick_in_on_short_input():
+    """Threshold guard requires ≥10 cues — short inputs (test fixtures,
+    very short clips) shouldn't trigger the safety regardless of
+    blacklist density."""
+    cues = [
+        _cue(0, "Thanks for watching."),
+        _cue(1, "Subscribe"),
+    ]
+    out, stats = filter_cues(cues)
+    # All dropped, no safety bail-out — 2 cues is below the
+    # ≥10 minimum for the heuristic to be statistically meaningful.
+    assert out == []
+    assert stats.blacklisted == 2

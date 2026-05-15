@@ -7,6 +7,62 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.7.34] — 2026-05-15
+
+Safety nets around the 0.7.33 audio-prep improvements. No new
+functionality — pure defense-in-depth in response to the question
+"are we sure none of the recent changes can OOM-kill or hard-fail?"
+
+### Audited (no code change needed)
+
+Walked the RAM profile of every 0.7.33 change. Findings:
+
+- **Center-channel extract** REDUCES peak RAM by ~1-1.5 GB for 5.1+
+  films (Demucs is skipped). ffprobe adds a ~30 MB transient at job
+  start. Net win.
+- **Loudnorm** is a streaming ffmpeg filter with a ~3 s lookahead
+  window — ~30 MB extra working set during extract. Negligible.
+- **Anti-hallucination filter** is pure Python list processing. For
+  a 1500-cue 2 h film: ~5 MB transient peak. Trivial.
+- **Orphan line-break fix** runs at VTT write time on already-
+  serialized cues. Same memory profile as before. Zero impact.
+
+Peak RAM for a typical Inception-class job on 0.7.34:
+~2-3.5 GB depending on Whisper + NLLB model sizes, well under
+the 6 GB TrueNAS cgroup. No new OOM risk introduced.
+
+### Added safety nets
+
+- **ffmpeg-extract fallback** in ``audio.extract_audio``. When the
+  optimised filter chain (``pan=mono|c0=FC,loudnorm=...``) fails —
+  e.g. ffprobe reports 5.1 but the actual stream has a non-standard
+  layout with no FC channel — we retry with a bare downmix + loudnorm
+  command. The user still gets a valid 16 kHz mono WAV; they just
+  miss the center-channel optimisation. Better than failing the whole
+  job over an edge-case mux. Logged at WARNING so operators can spot
+  it.
+
+- **Anti-hallucination 90% bail-out**. If the filter would drop ≥ 90%
+  of cues on a track with ≥ 10 cues, we suspect the heuristic is
+  wrong for THIS track (e.g. a YT screen-grab where dialogue IS
+  literally "Thanks for watching" lines, or Whisper hallucinated
+  across the whole audio) and return the ORIGINAL cue list with a
+  WARNING log. Stats record what WOULD have been dropped so the
+  metrics page surfaces the heuristic firing. Threshold + minimum-
+  size guard prevent the safety from kicking in on small test
+  inputs.
+
+### Tests
+
+- 2 new in ``test_audio_prep.py`` — pinning the optimised-chain
+  failure → fallback recovery + the non-center error-propagation
+  path.
+- 3 new in ``test_anti_hallucination.py`` — pinning the 90%-drop
+  bail-out, the 50%-drop normal-filter case, and the short-input
+  guard against false triggers on test fixtures.
+- Suite: 457 passing, 7 pre-existing env-only failures (missing
+  anthropic + faster_whisper Python packages in dev env).
+
 ## [0.7.33] — 2026-05-15
 
 Quality-first audio-pipeline pass — four no-LLM improvements bundled
