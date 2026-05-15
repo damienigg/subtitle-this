@@ -5,4 +5,4 @@ runtime we read from here rather than parsing pyproject (which isn't
 shipped inside the slim Docker image's `app/` package). Bump both when
 cutting a release — see CHANGELOG.md for the version history.
 """
-__version__ = "0.8.3"
+__version__ = "0.9.0"

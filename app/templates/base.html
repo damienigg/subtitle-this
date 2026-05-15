@@ -439,6 +439,40 @@
       line-height: 1.45; white-space: pre-line;
     }
 
+    /* Reference comparison card (0.9.0) — sits at the top of the
+       stats page next to the heuristic Quality Score. Same visual
+       weight as the heuristic card, distinct grade-colored accent
+       so the operator can spot which number is which at a glance. */
+    .reference-card {
+      border-left: 4px solid var(--pico-card-border-color);
+      padding-left: 0.9rem;
+    }
+    .reference-overall {
+      display: flex; align-items: center; gap: 1.2rem;
+      flex-wrap: wrap; margin-bottom: 0.7rem;
+    }
+    .reference-score-big {
+      font-size: 2.4rem; font-weight: 700; line-height: 1;
+    }
+    .reference-score-suffix {
+      font-size: 1rem; font-weight: 500;
+      color: var(--pico-muted-color);
+    }
+    .reference-grade-block { display: flex; flex-direction: column; }
+    .reference-grade-letter {
+      font-size: 1.6rem; font-weight: 700; line-height: 1;
+    }
+    .reference-grade-A .reference-card,
+    .reference-grade-A .reference-grade-letter { color: var(--bt-ok-fg); }
+    .reference-grade-A { border-left-color: var(--bt-ok-bg); }
+    .reference-grade-B { border-left-color: var(--bt-ok-bg); }
+    .reference-grade-C { border-left-color: var(--bt-warn-bg); }
+    .reference-grade-D { border-left-color: var(--bt-warn-bg); }
+    .reference-grade-F { border-left-color: var(--bt-err-bg); }
+    .reference-grade-D .reference-grade-letter,
+    .reference-grade-F .reference-grade-letter { color: var(--bt-err-fg); }
+    .reference-actions { margin-left: auto; display: flex; gap: 0.4rem; flex-wrap: wrap; }
+
     /* "[default]" pill next to selects whose current value matches the
        recommended option. Cheap visual cue so a user scanning the form
        sees at a glance "I have not overridden anything here". */

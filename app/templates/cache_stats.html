@@ -55,6 +55,146 @@
   </section>
 {% endif %}
 
+{# ── Reference comparison (0.9.0) ─────────────────────────────── #}
+<section class="reference-card">
+  <h2>Reference Score
+    <span class="muted small">(objective, calibrated against an uploaded ground-truth subtitle)</span>
+  </h2>
+  {% if reference_score %}
+    {% set rs = reference_score %}
+    <div class="reference-overall reference-grade-{{ rs.overall_grade }}">
+      <div class="reference-score-big">
+        {{ rs.overall_score }}<span class="reference-score-suffix">/100</span>
+      </div>
+      <div class="reference-grade-block">
+        <span class="reference-grade-letter">{{ rs.overall_grade }}</span>
+        <span class="muted small">vs reference</span>
+      </div>
+      <div class="reference-actions">
+        <form class="reference-upload-form"
+              data-cache-key="{{ cache_key }}"
+              style="display:inline-flex;gap:0.4rem;align-items:center;">
+          <input type="file" name="file" accept=".srt,.vtt" required>
+          <button type="submit" class="secondary">↑ Replace reference</button>
+        </form>
+        <button type="button" class="secondary"
+                onclick="if(confirm('Remove the reference for this entry?')){
+                  fetch('/api/cache/vtt/{{ cache_key }}/reference', {method:'DELETE'})
+                    .then(()=>location.reload())
+                }">✕ Remove reference</button>
+      </div>
+    </div>
+    {% if rs.caveat %}
+      <p class="warn-text small" style="margin: 0.5rem 0;">⚠ {{ rs.caveat }}</p>
+    {% endif %}
+    <table class="kv">
+      <tr><th>Coverage</th><td>
+        {{ rs.coverage_pct }} %
+        <span class="muted small">
+          ({{ rs.matched_count }} matched / {{ rs.reference_count }} reference cues
+          {% if rs.extras_count %}· {{ rs.extras_count }} extra in VTT{% endif %})
+          — dimension score {{ rs.dimension_scores.coverage }}/100
+        </span>
+      </td></tr>
+      <tr><th>Timing accuracy</th><td>
+        ±{{ rs.timing_offset_median_ms|int }} ms median
+        <span class="muted small">
+          (P90 ±{{ rs.timing_offset_p90_ms|int }} ms; pro DTW lands &lt; 300 ms)
+          — dimension score {{ rs.dimension_scores.timing }}/100
+        </span>
+      </td></tr>
+      <tr><th>Density ratio</th><td>
+        {{ rs.density_ratio }}× reference
+        <span class="muted small">
+          ({{ rs.generated_count }} VTT cues vs {{ rs.reference_count }} reference;
+          1.0 = same count)
+          — dimension score {{ rs.dimension_scores.density }}/100
+        </span>
+      </td></tr>
+      <tr><th>Orphan rate</th><td>
+        {{ rs.orphan_rate_pct }} % vs reference {{ rs.reference_orphan_rate_pct }} %
+        <span class="muted small">
+          (% of cues ending on a function word — pros aim for 0 %)
+          — dimension score {{ rs.dimension_scores.orphan }}/100
+        </span>
+      </td></tr>
+      <tr><th>Reading speed</th><td>
+        {{ rs.reading_speed_cps }} cps vs reference {{ rs.reference_reading_speed_cps }} cps
+        <span class="muted small">
+          (pro norm 15–18 cps median; faster = harder to read)
+          — dimension score {{ rs.dimension_scores.reading_speed }}/100
+        </span>
+      </td></tr>
+      <tr><th>Text similarity (chrF)</th><td>
+        {{ rs.text_similarity_chrf }}
+        <span class="muted small">
+          ({{ rs.matched_pairs_evaluated }} matched pairs evaluated; pro NLLB ≈ 0.55–0.70,
+          near-human ≥ 0.85)
+          — dimension score {{ rs.dimension_scores.text_similarity }}/100
+        </span>
+      </td></tr>
+    </table>
+    <p class="muted small" style="margin-top: 0.6rem;">
+      Weighted overall: coverage 30 % · text similarity 20 % · timing 20 % ·
+      density 10 % · orphan rate 10 % · reading speed 10 %. Use this number
+      to A/B test pipeline tweaks against a known-good baseline.
+    </p>
+  {% else %}
+    <p class="muted small" style="margin: 0.4rem 0 0.8rem;">
+      No reference uploaded for this entry. Upload a professional SRT (or VTT)
+      in the same target language as the generated VTT — the system will
+      compute six objective dimensions (coverage, timing accuracy, density,
+      orphan rate, reading speed, chrF text similarity) and a weighted
+      0–100 score. Strict same-language policy: a mismatch is refused at
+      upload time.
+    </p>
+    <form class="reference-upload-form"
+          data-cache-key="{{ cache_key }}"
+          style="display:flex;gap:0.5rem;align-items:center;">
+      <input type="file" name="file" accept=".srt,.vtt" required>
+      <button type="submit">↑ Upload reference</button>
+    </form>
+  {% endif %}
+</section>
+
+<script>
+  // Reference upload — intercept the form submit so the JSON
+  // response from /api/cache/vtt/{key}/reference doesn't get
+  // dumped to the browser as a raw page. On success: reload.
+  // On error: surface the server's message inline.
+  document.querySelectorAll('form.reference-upload-form').forEach(form => {
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fileInput = form.querySelector('input[type="file"]');
+      if (!fileInput.files.length) return;
+      const cacheKey = form.dataset.cacheKey;
+      const fd = new FormData();
+      fd.append('file', fileInput.files[0]);
+      const btn = form.querySelector('button[type="submit"]');
+      const oldText = btn.textContent;
+      btn.textContent = 'Computing…';
+      btn.disabled = true;
+      try {
+        const resp = await fetch(`/api/cache/vtt/${cacheKey}/reference`, {
+          method: 'POST', body: fd,
+        });
+        if (!resp.ok) {
+          const body = await resp.json().catch(() => ({}));
+          alert(body.detail || `Upload failed (HTTP ${resp.status})`);
+          btn.textContent = oldText;
+          btn.disabled = false;
+          return;
+        }
+        location.reload();
+      } catch (err) {
+        alert(`Upload failed: ${err}`);
+        btn.textContent = oldText;
+        btn.disabled = false;
+      }
+    });
+  });
+</script>
+
 {# ── Pipeline metadata card ──────────────────────────────────── #}
 <section>
   <h2>Pipeline</h2>

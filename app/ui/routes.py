@@ -1055,12 +1055,35 @@ def cache_stats_page(request: Request, cache_key: str) -> HTMLResponse:
             payload.get("pipeline_metrics") if isinstance(payload, dict) else None
         ),
     )
+    # Reference comparison (0.9.0): pull the cached score lazily —
+    # recomputes against the current VTT if the user re-polished
+    # since the original upload. None means "no reference uploaded
+    # yet" and the template renders an upload form instead of the
+    # score panel.
+    reference_score = None
+    if isinstance(payload, dict) and vtt_text:
+        try:
+            from app.reference_store import maybe_recompute_score
+            import re as _re
+            m = _re.search(
+                r"NOTE Subtitle This auto-subs \([a-z]{2} -> (?P<tgt>[a-z]{2})",
+                vtt_text,
+            )
+            if m:
+                reference_score = maybe_recompute_score(
+                    cache_key, vtt_text, vtt_target_lang=m.group("tgt"),
+                )
+        except Exception:
+            # Reference scoring is observability — must never block the
+            # stats page rendering for the heuristic Quality Score etc.
+            pass
     return templates.TemplateResponse(
         request,
         "cache_stats.html",
         {
             "stats": record,
             "cache_key": cache_key,
+            "reference_score": reference_score,
             "active": "cache",
         },
     )

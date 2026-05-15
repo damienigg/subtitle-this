@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 
@@ -699,6 +699,154 @@ def cache_repolish_vtt(cache_key: str) -> dict:
         "new_quality_score": new_score,
         "new_quality_grade": new_grade,
     }
+
+
+# ── Reference comparison (0.9.0) ─────────────────────────────────────────
+#
+# User uploads a ground-truth SRT/VTT for a cached entry; we compute the
+# objective comparison score (six dimensions: coverage, timing accuracy,
+# density, orphan rate, reading speed, chrF) and persist it next to the
+# reference. The Cache Explorer stats page surfaces the score alongside
+# the existing heuristic Quality Score so the operator can A/B test
+# pipeline tweaks against an actual ground truth.
+
+
+_NOTE_HEADER_TARGET_RE = __import__("re").compile(
+    r"NOTE Subtitle This auto-subs \([a-z]{2} -> (?P<tgt>[a-z]{2})"
+)
+
+
+def _target_lang_from_payload(payload: dict) -> str:
+    """Extract the generated VTT's target language. Two sources, in
+    order of reliability: the NOTE header on the VTT (always present
+    since 0.7.x), then any cached ``target_lang`` field on the payload
+    (not always populated). Raises 500 if neither is recoverable —
+    that would mean a malformed cache entry."""
+    vtt = payload.get("vtt") or ""
+    if isinstance(vtt, str):
+        m = _NOTE_HEADER_TARGET_RE.search(vtt)
+        if m:
+            return m.group("tgt")
+    tl = payload.get("target_lang")
+    if isinstance(tl, str) and tl:
+        return tl
+    raise HTTPException(
+        500,
+        "Cannot determine the generated VTT's target language — "
+        "cache entry is missing the standard NOTE header.",
+    )
+
+
+def _load_vtt_cache_payload(cache_key: str) -> tuple[Path, dict]:
+    """Resolve the cache key to a payload dict. Raises 400/404 with
+    a clear message on the usual error shapes. Shared by every
+    reference endpoint."""
+    import json
+    try:
+        cache_explorer._validate_cache_key(cache_key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    path = Path(settings.cache_dir) / f"{cache_key}.json"
+    if not path.is_file():
+        raise HTTPException(404, f"VTT cache entry {cache_key!r} not found")
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        raise HTTPException(500, f"unreadable cache entry: {e}")
+    if not isinstance(payload, dict) or not payload.get("vtt"):
+        raise HTTPException(404, f"entry {cache_key!r} has no .vtt content")
+    return path, payload
+
+
+@router.post("/cache/vtt/{cache_key}/reference")
+async def cache_upload_reference(
+    cache_key: str,
+    file: UploadFile = File(...),
+) -> dict:
+    """Upload a ground-truth SRT (or VTT) reference for a cached entry.
+    Computes the comparison score immediately and returns it.
+
+    Strict language policy: the reference's auto-detected language
+    must match the cached VTT's target language. Mismatches return
+    400 with a clear message so the operator can correct the upload."""
+    from app.reference_store import (
+        LanguageMismatch, UnreadableReference, store_reference,
+    )
+
+    _, payload = _load_vtt_cache_payload(cache_key)
+    target_lang = _target_lang_from_payload(payload)
+    generated_vtt = payload["vtt"]
+
+    # 5 MB cap — a 2 h film's SRT sits around 100-150 KB; the cap
+    # protects against accidental uploads of much larger files
+    # (full transcripts, source media by mistake, etc.) before they
+    # land in the cache dir.
+    raw = await file.read(5 * 1024 * 1024 + 1)
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(
+            413, "Reference file is larger than 5 MB — not a subtitle file.",
+        )
+    try:
+        ref_content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # SRTs in the wild are often latin-1 / cp1252; try that as
+        # a fallback before giving up.
+        try:
+            ref_content = raw.decode("latin-1")
+        except UnicodeDecodeError:
+            raise HTTPException(
+                400,
+                "Reference file is not valid UTF-8 or Latin-1 text.",
+            )
+
+    try:
+        score = store_reference(
+            cache_key, ref_content, generated_vtt,
+            vtt_target_lang=target_lang,
+        )
+    except UnreadableReference as e:
+        raise HTTPException(400, str(e))
+    except LanguageMismatch as e:
+        raise HTTPException(400, str(e))
+
+    from app.reference import to_jsonable
+    out = to_jsonable(score)
+    out["filename"] = file.filename or "reference.srt"
+    return out
+
+
+@router.delete("/cache/vtt/{cache_key}/reference")
+def cache_delete_reference(cache_key: str) -> dict:
+    """Remove the uploaded reference + cached score for a cache key.
+    Returns ``{"removed": bool}`` so the UI can update without a
+    follow-up GET."""
+    try:
+        cache_explorer._validate_cache_key(cache_key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    from app.reference_store import delete_reference
+    return {"removed": delete_reference(cache_key)}
+
+
+@router.get("/cache/vtt/{cache_key}/reference/score")
+def cache_get_reference_score(cache_key: str) -> dict:
+    """Return the cached ReferenceScore record, recomputing on the
+    fly if the underlying VTT has changed since the score was first
+    persisted (e.g. after a re-polish). Returns 404 when no reference
+    is on file — the UI uses that to render the upload form."""
+    _, payload = _load_vtt_cache_payload(cache_key)
+    target_lang = _target_lang_from_payload(payload)
+    generated_vtt = payload["vtt"]
+
+    from app.reference_store import maybe_recompute_score
+    score = maybe_recompute_score(
+        cache_key, generated_vtt, vtt_target_lang=target_lang,
+    )
+    if score is None:
+        raise HTTPException(
+            404, f"No reference uploaded for cache entry {cache_key!r}",
+        )
+    return score
 
 
 # ── App update ────────────────────────────────────────────────────────────

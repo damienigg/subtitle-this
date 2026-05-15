@@ -7,6 +7,80 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-15
+
+New feature — **Reference comparison**. The operator can now upload a
+ground-truth subtitle file (pro SRT, fan SRT, professional VTT) for
+any cached entry and get back an **objective Reference Score** that
+measures how close the generated VTT is to professional-grade output
+across six dimensions. This closes the loop on the 0.7.x–0.8.x
+quality roadmap: instead of inferring quality from pipeline-health
+heuristics, the operator can A/B test each tweak against a known-good
+baseline.
+
+### Added
+
+- **`app/reference.py`** — pure-Python comparison core. Parses both
+  SRT and WebVTT inputs, runs a stopword-frequency language detector
+  (offline, no external dep), aligns cues via a greedy two-pointer
+  pass within a ±3 s window, and computes six dimensions:
+  - **Coverage**: % of reference cues with a matched VTT cue (weight 30 %).
+  - **Timing accuracy**: median |Δstart| on matched pairs (weight 20 %).
+  - **Density ratio**: generated_count / reference_count (weight 10 %).
+  - **Orphan rate**: % of cues ending on a function word, vs the
+    reference's own rate (weight 10 %).
+  - **Reading speed**: median chars/sec, vs the reference's median (weight 10 %).
+  - **Text similarity**: character-level F1 (chrF, β=2, n=6) on
+    matched pairs (weight 20 %).
+  Weighted overall on a 0–100 scale + A/B/C/D/F grade matching the
+  heuristic Quality Score's thresholds.
+- **`app/reference_store.py`** — persists the uploaded reference and
+  the computed score under `cache_dir/refs/<key>.ref.srt` /
+  `<key>.ref.json`. Lazy recompute: the cached score carries a
+  fingerprint of the VTT it was scored against, so a re-polish that
+  changes the VTT triggers a fresh comparison on the next stats-page
+  view without the operator re-uploading.
+- **Three new API endpoints** in `app/api/manage.py`:
+  - `POST /api/cache/vtt/{cache_key}/reference` — multipart upload.
+    Strict same-language policy: the reference's detected language
+    must match the generated VTT's target language (parsed from the
+    NOTE header); mismatches return 400 with a clear message.
+    Rejects unparseable content with 400; caps the upload at 5 MB.
+  - `DELETE /api/cache/vtt/{cache_key}/reference` — remove ref + score.
+  - `GET /api/cache/vtt/{cache_key}/reference/score` — fetch the
+    cached score (404 if no reference is on file).
+- **Reference Score panel** on the Cache Explorer stats page. When
+  no reference is on file: an inline upload form with format hint.
+  When a reference exists: a big-number overall score + grade,
+  per-dimension breakdown with each dimension's contribution to the
+  overall, Replace / Remove buttons, and a caveat line surfaced for
+  short references (< 100 cues).
+
+### Tests
+
+- **`tests/test_reference.py`** — 24 tests pinning:
+  - SRT + WebVTT parsing (multi-line cues, BOM/CRLF tolerance,
+    degenerate-cue drop, NOTE/header skip).
+  - Language detection (FR/EN/ES happy paths, threshold-based refusal
+    on too-short and ambiguous inputs).
+  - chrF math (identical → 1.0, disjoint → ≈ 0, short-string fallback).
+  - Greedy cue alignment (matches, extras, misses).
+  - Score computation (perfect match → A grade ≥ 90; translation-only
+    drift → C/D; coverage-only drift → C with realistic upper bound).
+  - All three endpoints end-to-end via FastAPI TestClient — happy
+    path, language mismatch refusal, unparseable refusal, full
+    upload → GET → DELETE → 404 round-trip.
+- **524 tests passing** (was 500 in 0.8.3).
+
+### Bump rationale
+
+This is a minor-version bump (0.8.3 → 0.9.0) not a patch because it
+adds a new persisted artifact type (`<key>.ref.srt` / `<key>.ref.json`
+under `cache_dir/refs/`) and a new schema (`ReferenceScore`) that
+downstream consumers may want to integrate against. No breaking
+change for end users — existing cached VTTs work exactly as before;
+the Reference Score is opt-in per entry.
+
 ## [0.8.3] — 2026-05-15
 
 Code-review pass. Three parallel audit agents (dead-code, duplication,
