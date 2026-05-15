@@ -711,13 +711,22 @@ def cache_repolish_vtt(cache_key: str) -> dict:
 # pipeline tweaks against an actual ground truth.
 
 
+# 0.11.3+: accept all three NOTE header shapes the pipeline emits.
+#   1. STT path           : "Subtitle This auto-subs (en -> fr, ...)"
+#   2. Embedded translate : "Subtitle This embedded subs (en -> fr, ...)"
+#   3. Embedded copy mode : "Subtitle This embedded subs (fr, ..., copied as-is)"
+# The translate paths carry "src -> tgt"; copy mode has just one language
+# token (source == target since the embedded sub was already in the
+# user's target language). Group 1 captures the leading lang, group "tgt"
+# captures the arrow target; if "tgt" is None, group 1 IS the target.
 _NOTE_HEADER_TARGET_RE = __import__("re").compile(
-    r"NOTE Subtitle This auto-subs \([a-z]{2} -> (?P<tgt>[a-z]{2})"
+    r"NOTE Subtitle This (?:auto-subs|embedded subs) "
+    r"\(([a-z]{2})(?: -> (?P<tgt>[a-z]{2}))?"
 )
 
 
 def _target_lang_from_payload(payload: dict) -> str:
-    """Extract the generated VTT's target language. Two sources, in
+    """Extract the generated VTT's target language. Three sources, in
     order of reliability: the NOTE header on the VTT (always present
     since 0.7.x), then any cached ``target_lang`` field on the payload
     (not always populated). Raises 500 if neither is recoverable —
@@ -726,7 +735,9 @@ def _target_lang_from_payload(payload: dict) -> str:
     if isinstance(vtt, str):
         m = _NOTE_HEADER_TARGET_RE.search(vtt)
         if m:
-            return m.group("tgt")
+            # Copy mode has no arrow → the single lang is both source
+            # and target. Translate paths carry the arrow target.
+            return m.group("tgt") or m.group(1)
     tl = payload.get("target_lang")
     if isinstance(tl, str) and tl:
         return tl

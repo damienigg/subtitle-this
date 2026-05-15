@@ -7,6 +7,30 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.11.3] — 2026-05-15
+
+### Fixed
+
+- **Reference SRT upload on embedded-subs jobs returned 500.** The
+  upload endpoint's NOTE-header regex was a third hardcoded copy of
+  the old `auto-subs (en -> fr)` pattern — 0.11.1 fixed the two
+  page-render paths but missed this one. Result: every reference
+  upload on a 0.10.0+ embedded-subs run returned
+  `Cannot determine the generated VTT's target language`. The regex
+  now matches all three NOTE shapes:
+  - `auto-subs (xx -> yy, ...)` — STT path
+  - `embedded subs (xx -> yy, ...)` — embedded translate path
+  - `embedded subs (yy, ..., copied as-is)` — embedded copy-same-lang
+  (copy-mode header has no arrow; the single language token is the
+  target, since it's by construction the same as the source).
+
+### Tests
+
+- `test_target_lang_from_payload_handles_all_note_shapes` pins all
+  three NOTE shapes plus a legacy header so no future regex
+  tightening can quietly bring back any of these failures.
+- 536 passing total (was 535).
+
 ## [0.11.2] — 2026-05-15
 
 UI clarity follow-ups based on first impressions of the multi-lang

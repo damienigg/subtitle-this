@@ -394,6 +394,36 @@ def test_upload_reference_endpoint_refuses_language_mismatch(client_with_cached_
     assert "same-language" in resp.json()["detail"].lower()
 
 
+def test_target_lang_from_payload_handles_all_note_shapes():
+    """0.11.3 regression: _target_lang_from_payload was hardcoded to
+    only match the old 'auto-subs (xx -> yy)' NOTE header. The 0.10.0
+    embedded-subs short-circuit emits two new shapes:
+    - translate-other-lang: 'embedded subs (en -> fr, ...)'
+    - copy-same-lang     : 'embedded subs (fr, ..., copied as-is)'
+    Both must resolve to the correct target — without this, every
+    reference upload on an embedded-subs job returned the
+    'Cannot determine the generated VTT's target language' 500."""
+    from app.api.manage import _target_lang_from_payload
+
+    cases = [
+        # (NOTE header line, expected target)
+        ("Subtitle This auto-subs (en -> fr, whisper=small, provider=nllb)", "fr"),
+        ("Subtitle This embedded subs (en -> fr, source=embedded-subrip, "
+         "track #6, provider=nllb, polished=true)", "fr"),
+        ("Subtitle This embedded subs (fr, source=embedded-subrip, "
+         "track #6, copied as-is)", "fr"),
+        # Pre-0.7.32 mode-suffixed legacy header — verifies the lax
+        # match doesn't accidentally regress.
+        ("Subtitle This auto-subs (ja -> en, whisper=large, provider=llm, "
+         "polished=true)", "en"),
+    ]
+    for note, expected in cases:
+        vtt = f"WEBVTT\n\nNOTE {note}\n\n00:00:01.000 --> 00:00:02.000\nhi\n"
+        assert _target_lang_from_payload({"vtt": vtt}) == expected, (
+            f"failed on NOTE: {note!r}"
+        )
+
+
 def test_upload_reference_endpoint_refuses_unparseable(client_with_cached_vtt):
     """An uploaded file that doesn't parse to any cue must 400."""
     client, cache_key, _ = client_with_cached_vtt
