@@ -92,6 +92,35 @@ def test_parse_tolerant_of_windows_line_endings_and_bom():
     assert cues[0].text == "With CRLF."
 
 
+def test_parse_vtt_accepts_mm_ss_format_for_sub_hour_cues():
+    """0.11.1 regression: ffmpeg's webvtt encoder emits ``mm:ss.ms``
+    (no hours group) for cues under 1 h. Pre-0.11.1 the parser regex
+    required the hours group and silently dropped EVERY cue from the
+    first hour of a film — Inception (148 min, embedded English subs)
+    came out missing all 749 first-half cues. This pins the fix so a
+    future regex tightening can't bring back the bug."""
+    vtt = """WEBVTT
+
+00:01.000 --> 00:03.500
+First cue under 1h.
+
+59:59.500 --> 1:00:00.500
+Spanning the boundary.
+
+01:00:00.100 --> 01:00:03.000
+Standard hh:mm:ss.ms cue.
+"""
+    cues = parse_subtitle(vtt)
+    assert len(cues) == 3
+    assert cues[0].start == 1.0           # mm:ss.ms parsed correctly
+    assert cues[0].end == 3.5
+    assert cues[0].text == "First cue under 1h."
+    assert cues[1].start == 3599.5        # 59:59.500 parsed correctly
+    assert cues[1].end == 3600.5          # 1:00:00.500 (single-digit hour)
+    assert cues[2].start == 3600.1        # 01:00:00.100 (zero-padded hour)
+    assert cues[2].end == 3603.0
+
+
 # ── Language detection ──────────────────────────────────────────────────────
 
 

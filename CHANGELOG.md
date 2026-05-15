@@ -7,6 +7,47 @@ expect breaking changes between minor versions until 1.0.
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-05-15
+
+Bug-fix patch. Three issues found on the first end-to-end run of the
+0.10.0 embedded-subs short-circuit.
+
+### Fixed
+
+- **VTT cues from the first hour silently dropped (CRITICAL).**
+  `parse_subtitle` required hours in the timestamp regex
+  (``hh:mm:ss.ms``), but ffmpeg's webvtt encoder emits the short
+  ``mm:ss.ms`` form for cues under 1 h. The result on a 2 h film was
+  the entire first half missing — Inception came out with cues only
+  from 01:00:00 onwards (749 cues retained, ~1000 silently lost).
+  The regex now makes the hours group optional; both formats parse
+  correctly. New regression test pins the fix.
+- **Reference upload + stats download broken from the job stats
+  page** (`invalid cache key: 'job:<id>'`). The `/jobs/{id}/stats`
+  route passed a `job:<id>` sentinel to the template; the reference
+  upload form and the Raw-JSON download link both routed it back
+  through cache-key-validated APIs, which rejected the colon as a
+  path-traversal attempt. Now the route resolves the real cache_key
+  for the job (basename match against payload `media_path` stems —
+  same logic used for legacy pipeline-metrics recovery) and uses
+  that for the form actions. When no cache entry can be found (very
+  rare — file deleted between job completion and page load), an
+  explanatory note replaces the upload form.
+- **Reference scoring missed embedded-subs runs.** The NOTE-header
+  regex was `Subtitle This auto-subs (...)` only; the 0.10.0
+  embedded-subs short-circuit writes `Subtitle This embedded subs
+  (...)` so the lazy reference-score recompute returned None on
+  every job that took the new path. Regex now accepts both shapes.
+  Same-language copy mode (no `-> tgt` arrow in the header) also
+  parses cleanly with the cached `detected_source_language` as the
+  fallback target.
+
+### Tests
+
+- New `test_parse_vtt_accepts_mm_ss_format_for_sub_hour_cues`
+  regression test.
+- 533 passing total (was 532).
+
 ## [0.11.0] — 2026-05-15
 
 UI clarity pass. Three independent changes that each addressed a

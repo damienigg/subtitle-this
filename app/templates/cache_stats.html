@@ -56,6 +56,23 @@
 {% endif %}
 
 {# ── Reference comparison (0.9.0) ─────────────────────────────── #}
+{# 0.11.1+: the reference upload + score round-trip is gated on a
+   real cache_key. When the page is rendered from /jobs/{id}/stats
+   without a matching cache entry (rare — happens only if the cache
+   file got deleted between job completion and page load), the
+   `is_job_only_view` flag is True and we render an explanatory note
+   instead of a non-functional upload form. #}
+{% if is_job_only_view %}
+<section class="reference-card">
+  <h2>Reference Score <span class="muted small">(unavailable for this view)</span></h2>
+  <p class="muted small" style="margin: 0.4rem 0;">
+    This job's underlying cache entry could not be located on disk,
+    so the reference upload + score features are disabled here. Open
+    the entry from the <a href="/cache">Cache Explorer</a> to upload
+    a reference subtitle for objective comparison.
+  </p>
+</section>
+{% else %}
 <section class="reference-card">
   <h2>Reference Score
     <span class="muted small">(objective, calibrated against an uploaded ground-truth subtitle)</span>
@@ -156,6 +173,7 @@
     </form>
   {% endif %}
 </section>
+{% endif %}
 
 <script>
   // Reference upload — intercept the form submit so the JSON
@@ -843,10 +861,12 @@
   </section>
 {% endif %}
 
+{% if not is_job_only_view %}
 <section>
   <p class="muted small">
     <a href="/api/cache/vtt/{{ cache_key }}/stats">Raw JSON</a>
     · same record as the <code>.stats.json</code> sidecar written at completion time.
   </p>
 </section>
+{% endif %}
 {% endblock %}

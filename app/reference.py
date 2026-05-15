@@ -61,17 +61,26 @@ class _Cue:
         return max(0.0, self.end - self.start)
 
 
-# WebVTT and SRT use almost the same timestamp grammar — SRT uses a
-# comma before the millis, VTT uses a dot. Accept both so the parser
-# handles either format with one regex.
+# WebVTT and SRT use almost the same timestamp grammar:
+# - SRT always emits hh:mm:ss,ms with comma before the millis.
+# - WebVTT emits hh:mm:ss.ms when hours > 0, but COLLAPSES to mm:ss.ms
+#   for cues under 1 h. ffmpeg's webvtt encoder strictly follows this
+#   convention — extracting Inception (which has plenty of < 1 h cues)
+#   would produce a mix of both shapes. A regex that only accepts the
+#   long form silently drops every sub-1h cue, which is exactly the
+#   "all cues from minute 0–59 missing" bug observed on 0.10.0
+#   embedded-subs runs before this was fixed.
+#
+# The pattern below makes the hours group OPTIONAL and recovers a
+# default of 0 when absent. One regex, both formats.
 _TS_RE = re.compile(
-    r"(\d{1,2}):(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*"
-    r"(\d{1,2}):(\d{2}):(\d{2})[.,](\d{3})"
+    r"(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[.,](\d{3})\s*-->\s*"
+    r"(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[.,](\d{3})"
 )
 
 
-def _ts_to_seconds(h: str, m: str, s: str, ms: str) -> float:
-    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+def _ts_to_seconds(h: str | None, m: str, s: str, ms: str) -> float:
+    return (int(h) if h else 0) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
 
 
 def parse_subtitle(content: str) -> list[_Cue]:

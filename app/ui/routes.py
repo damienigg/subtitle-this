@@ -917,19 +917,29 @@ def library(
     )
 
 
-def _find_legacy_pipeline_metrics(output_path: str | None) -> dict | None:
-    """Recover pipeline_metrics for a legacy Job (pre-0.7.13, before
-    ``Job.pipeline_metrics`` was a persisted field) by scanning the
-    VTT cache for a payload whose ``media_path`` plausibly matches
-    the job's output filename. Best-effort — None if nothing fits.
+def _find_cache_entry_for_output(output_path: str | None) -> tuple[str | None, dict | None]:
+    """Find the VTT cache entry that backs a job's output file.
+
+    Returns ``(cache_key, pipeline_metrics)`` — both may be None.
 
     The .vtt filename produced by the runner is shaped as
     ``<media_basename>.<lang>.<mode>.ai.vtt`` (see ``api/manage._vtt_path``).
-    We strip the four predictable trailing components to recover the
-    media basename, then compare it against the stem of each cached
-    payload's ``media_path``. First match wins."""
+    We strip the predictable trailing components to recover the
+    media basename, then scan the cache directory for an entry whose
+    ``media_path`` stem contains that basename. First match wins.
+
+    Uses:
+    - The job-stats page (``/jobs/{id}/stats``) uses the cache_key to
+      surface the same stats-JSON download and reference-upload UI
+      the Cache Explorer page has. Without it the page would still
+      render, but those API calls would fail because the validator
+      rejects the ``"job:<id>"`` sentinel as a path-traversal attempt.
+    - Pre-0.7.13 jobs that lack a persisted ``pipeline_metrics``
+      field get it recovered from the cache payload (the cache always
+      had it; only the Job dataclass was missing the column).
+    """
     if not output_path:
-        return None
+        return None, None
     import json
     from pathlib import Path
     out_name = Path(output_path).name
@@ -953,11 +963,11 @@ def _find_legacy_pipeline_metrics(output_path: str | None) -> dict | None:
     if "." in base:
         base = base.rsplit(".", 1)[0]
     if not base:
-        return None
+        return None, None
 
     cache_root = Path(settings.cache_dir)
     if not cache_root.is_dir():
-        return None
+        return None, None
     for entry in cache_root.iterdir():
         if not entry.is_file() or entry.suffix != ".json":
             continue
@@ -972,9 +982,17 @@ def _find_legacy_pipeline_metrics(output_path: str | None) -> dict | None:
         media_path = payload.get("media_path") or ""
         if base in Path(media_path).stem:
             pm = payload.get("pipeline_metrics")
-            if isinstance(pm, dict):
-                return pm
-    return None
+            return entry.stem, pm if isinstance(pm, dict) else None
+    return None, None
+
+
+def _find_legacy_pipeline_metrics(output_path: str | None) -> dict | None:
+    """Thin back-compat wrapper around _find_cache_entry_for_output.
+
+    Some legacy callers care only about the metrics, not the key.
+    Kept around as a small helper so existing imports don't break."""
+    _, pm = _find_cache_entry_for_output(output_path)
+    return pm
 
 
 @router.get("/jobs/{job_id}/error", response_class=HTMLResponse)
@@ -1049,31 +1067,65 @@ def job_stats_page(request: Request, job_id: str) -> HTMLResponse:
     # alone, misses every VAD / packing / translation penalty, and
     # silently reports a higher score than the pill claimed.
     #
-    # Fallback for legacy jobs (pre-0.7.13, before Job.pipeline_metrics
-    # was a field): search the VTT cache for a payload whose
-    # ``media_path`` matches this job's output. The .vtt name carries
-    # the media basename (``<basename>.<lang>.<mode>.ai.vtt``), so we
-    # peel off the predictable suffixes to recover the basename and
-    # match it against cached ``media_path`` stems. Linear scan over
-    # cache_dir/*.json — typically a handful of files, dwarfed by the
-    # template render cost.
+    # 0.11.1+: ALSO resolve the real cache_key for this job. The cache
+    # always carries the entry (every successful job calls
+    # cache_mod.store_two_level before returning), so a basename match
+    # against the cache payloads recovers the hex key — which the
+    # template needs to power the Raw-JSON stats download link and the
+    # reference-upload form. Without this they'd hit the API with a
+    # ``"job:<id>"`` sentinel and be rejected by the cache-key
+    # validator as a path-traversal attempt.
+    real_cache_key, recovered_metrics = _find_cache_entry_for_output(j.output_path)
     pipeline_metrics = getattr(j, "pipeline_metrics", None)
     if pipeline_metrics is None:
-        pipeline_metrics = _find_legacy_pipeline_metrics(j.output_path)
+        pipeline_metrics = recovered_metrics
+    effective_cache_key = real_cache_key or f"job:{job_id}"
 
     record = stats_mod.compute_from_vtt(
         vtt_text,
         media_path=str(path),
-        cache_key=f"job:{job_id}",
+        cache_key=effective_cache_key,
         mode=j.mode,
         pipeline_metrics=pipeline_metrics,
     )
+
+    # If we resolved a real cache_key, also look up the reference
+    # score (same lazy-recompute path the /cache page uses) so the
+    # job stats view shows the same reference panel.
+    reference_score = None
+    if real_cache_key:
+        try:
+            from app.reference_store import maybe_recompute_score
+            import re as _re
+            # 0.11.1+: accept both NOTE header shapes (STT path emits
+            # "Subtitle This auto-subs"; the embedded-subs short-circuit
+            # emits "Subtitle This embedded subs"). The capture group
+            # is the same target lang in both.
+            m = _re.search(
+                r"NOTE Subtitle This (?:auto-subs|embedded subs) "
+                r"\([a-z]{2}(?: -> (?P<tgt>[a-z]{2}))?",
+                vtt_text,
+            )
+            if m and m.group("tgt"):
+                reference_score = maybe_recompute_score(
+                    real_cache_key, vtt_text, vtt_target_lang=m.group("tgt"),
+                )
+        except Exception:
+            pass
+
     return templates.TemplateResponse(
         request,
         "cache_stats.html",
         {
             "stats": record,
-            "cache_key": f"job:{job_id}",
+            "cache_key": effective_cache_key,
+            "reference_score": reference_score,
+            # 0.11.1+: the template hides the reference upload form and
+            # the stats-download link when this is True, because they
+            # both go through cache-key-validated APIs that reject the
+            # "job:<id>" sentinel. Surfaces a small explanatory note
+            # instead so the user understands why the buttons are gone.
+            "is_job_only_view": not bool(real_cache_key),
             "active": "dashboard",
         },
     )
@@ -1125,13 +1177,20 @@ def cache_stats_page(request: Request, cache_key: str) -> HTMLResponse:
         try:
             from app.reference_store import maybe_recompute_score
             import re as _re
+            # 0.11.1+: accept both NOTE header shapes (STT path emits
+            # "Subtitle This auto-subs"; the embedded-subs short-circuit
+            # emits "Subtitle This embedded subs"). On a same-lang copy
+            # the header has no "-> tgt" arrow at all — fall back to
+            # the cached payload's detected_source_language as target.
             m = _re.search(
-                r"NOTE Subtitle This auto-subs \([a-z]{2} -> (?P<tgt>[a-z]{2})",
+                r"NOTE Subtitle This (?:auto-subs|embedded subs) "
+                r"\(([a-z]{2})(?: -> (?P<tgt>[a-z]{2}))?",
                 vtt_text,
             )
             if m:
+                tgt = m.group("tgt") or m.group(1)
                 reference_score = maybe_recompute_score(
-                    cache_key, vtt_text, vtt_target_lang=m.group("tgt"),
+                    cache_key, vtt_text, vtt_target_lang=tgt,
                 )
         except Exception:
             # Reference scoring is observability — must never block the
@@ -1144,6 +1203,7 @@ def cache_stats_page(request: Request, cache_key: str) -> HTMLResponse:
             "stats": record,
             "cache_key": cache_key,
             "reference_score": reference_score,
+            "is_job_only_view": False,
             "active": "cache",
         },
     )
